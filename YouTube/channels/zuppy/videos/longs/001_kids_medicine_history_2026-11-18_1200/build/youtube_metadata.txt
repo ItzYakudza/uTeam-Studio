@@ -1,0 +1,58 @@
+TITLE
+How Children Were Treated Centuries Ago (And Why So Many Didn't Survive)
+
+DESCRIPTION
+For most of history, close to half of all children did not reach their fifth birthday. This animated story shows how parents and doctors tried to treat children before germ theory, from swaddling and the teething panic to opium syrups, mercury powders, rickets, smallpox, dirty milk, and the discoveries that finally changed everything.
+
+CHAPTERS
+0:00 Hook
+0:21 The numbers
+0:49 Swaddling
+1:14 Pushing back on swaddling
+1:38 The teething panic
+2:03 Lancing and charms
+2:26 Opium for babies
+2:52 Mrs Winslow's Soothing Syrup
+3:16 Mercury teething powders
+3:40 Why they believed it
+4:03 Rickets and cod liver oil
+4:32 Smallpox and variolation
+5:01 Lady Mary Montagu
+5:29 Jenner and the vaccine
+5:55 The swill milk scandal
+6:19 Diphtheria
+6:45 Laws and labels
+7:05 Teething today
+7:34 What really worked
+8:00 The big picture
+8:23 Final thoughts
+
+SOURCES
+- Our World in Data (Hannah Ritchie), How child mortality has declined in the last two centuries: https://ourworldindata.org/child-mortality-global-overview
+- Our World in Data, Child mortality rate (Gapminder, UN IGME): https://ourworldindata.org/grapher/child-mortality
+- Science Museum Group blog, The addictive history of medicine: opium, the poor child's nurse: https://blog.sciencemuseum.org.uk/the-addictive-history-of-medicine-opium-the-poor-childs-nurse
+- Wellcome Collection, The poor child's nurse: https://wellcomecollection.org/stories/the-poor-child-s-nurse
+- Brecher, Consumers Union Report on Licit and Illicit Drugs (1972), Part I: https://ukcia.org/research/cunion/cu1.htm
+- Wood Library-Museum, Mrs. Winslow's Soothing Syrup: https://www.woodlibrarymuseum.org/?p=4211
+- Pharmacy Times, Pharmacy's Past: the soothing syrup known for causing death in thousands of babies: https://www.pharmacytimes.com/view/pharmacys-past-the-soothing-syrup-known-for-causing-death-in-thousands-of-babies-
+- British Dental Journal (2001), Teething: historical teachings and old wives' tales: https://www.nature.com/bdj/journal/v191/n1/full/4801078a.html
+- Hektoen International, Bells, whistles and rattles (Bills of Mortality): https://hekint.org/2025/06/23/bells-whistles-and-rattles-something-to-get-your-teeth-into/
+- Wikipedia, Teething (calomel and pink disease): https://en.wikipedia.org/wiki/Teething
+- P. M. Dunn, Swaddling the newborn infant: then and now, Infant Journal: https://www.infantjournal.co.uk/journal_article.html?id=7101
+- Young V&A, Swaddling: babies in a tight bind: https://www.vam.ac.uk/blog/museum-of-childhood/swaddling-babies-in-a-tight-bind
+- Rajakumar (2003), Vitamin D, cod-liver oil, sunlight, and rickets, Pediatrics: https://pubmed.ncbi.nlm.nih.gov/12897318/
+- A Brief History of Nutritional Rickets, Frontiers in Endocrinology (2019): https://pmc.ncbi.nlm.nih.gov/articles/PMC6867964
+- Country Life, Who administered the first vaccination?: https://countrylife.co.uk/comment-opinion/curious-questions-did-edward-jenner-really-administer-the-first-vaccine-222999
+- History News Network, Jenner, Phipps and variolation: https://www.historynewsnetwork.org/article/162034
+- Museum of Health Care, From variolation to cowpox vaccination: https://www.museumofhealthcare.ca/blog/from-variolation-to-cowpox-vaccination-the-first-steps-towards-eradicating-smallpox
+- World Health Organization, Smallpox: https://www.who.int/health-Topics/smallpox
+- Big Think, The swill milk scandal: https://bigthink.com/the-past/swill-milk-scandal/
+- Behring and diphtheria serum therapy, PMC review: https://pmc.ncbi.nlm.nih.gov/articles/PMC5347343
+- U.S. FDA, The 1906 Food and Drugs Act and its enforcement: https://www.fda.gov/about-fda/changes-science-law-and-regulatory-authorities/part-i-1906-food-and-drugs-act-and-its-enforcement
+- HealthyChildren.org (AAP), Teething necklaces and beads: https://www.healthychildren.org/english/ages-stages/baby/teething-tooth-care/pages/amber-teething-necklaces.aspx
+
+This video is educational history. It is not medical advice. Always ask a pediatrician about your child's health.
+
+
+TAGS
+history of medicine, how children were treated in the past, history of childhood, teething history, swaddling history, opium for babies, soothing syrup, smallpox vaccine history, Edward Jenner, rickets, cod liver oil, swill milk, diphtheria, child mortality, animated history, educational animation, zuppy

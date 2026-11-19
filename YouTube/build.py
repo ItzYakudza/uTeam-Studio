@@ -170,7 +170,7 @@ Episode: {ep_name}
 Channel: {channel}
 """
 
-from core.primitives import *
+from core.toolkit import *
 
 MODE = "{mode}"
 CHANNEL_NAME = "{channel}"
@@ -198,6 +198,8 @@ def s01(cv, t, T):
 
 def s02(cv, t, T):
     title(cv, t, "Second scene", 52, 140)
+
+TRANSITIONS = {{}}   # например {{1: "iris", 2: "zoom:0.5"}}
 
 _FN = {{"s01": s01, "s02": s02}}
 _BG = {{"s01": (255, 248, 225), "s02": (232, 240, 255)}}
@@ -291,7 +293,8 @@ def render(ep_dir, preview: bool = False, channel_override: str = None):
     write_metadata(str(meta_path), ep, sync.starts, chapters)
 
     out_path = build_dir / f"final_{ep_dir.name}.mp4"
-    render_episode(scenes, sync, cfg, str(out_path), channel_name=channel, work_dir=str(source_dir))
+    render_episode(scenes, sync, cfg, str(out_path), channel_name=channel, work_dir=str(source_dir),
+                   transitions=getattr(ep, "TRANSITIONS", None))
     print()
     print("=" * 50)
     print(f"  ✓ Готово")
@@ -300,6 +303,34 @@ def render(ep_dir, preview: bool = False, channel_override: str = None):
     print(f"  Длительность: {sync.total:.1f}s")
     print(f"  source/:    {source_dir}")
     print("=" * 50)
+
+
+def sheet(ep_dir, cols: int = 6):
+    """Контактный лист: ключевые кадры всех сцен на одном PNG, без рендера видео (нужен voiceover.mp3)."""
+    ep_dir = Path(ep_dir).resolve()
+    scenes_path, voice_path = ep_dir / "scenes.py", ep_dir / "voiceover.mp3"
+    if not scenes_path.exists() or not voice_path.exists():
+        print("ERROR: нужны scenes.py и voiceover.mp3")
+        return
+    import sys as _sys
+    _old = _sys.dont_write_bytecode
+    _sys.dont_write_bytecode = True
+    try:
+        ep = load_module(str(scenes_path))
+    finally:
+        _sys.dont_write_bytecode = _old
+    from core.config import get_format
+    from core.audio_sync import prepare_voice
+    from core.preview import contact_sheet
+    mode = getattr(ep, "MODE", "shorts").lower()
+    cfg = get_format(mode, preview=True)
+    source_dir = ep_dir / "source"
+    source_dir.mkdir(exist_ok=True)
+    sync = prepare_voice(str(voice_path), ep.TEXTS, cfg, work_dir=str(source_dir))
+    out = ep_dir / "build"
+    out.mkdir(exist_ok=True)
+    path = contact_sheet(ep.SCENES, sync.T, cfg, str(out / "contact_sheet.png"), cols=cols)
+    print(f"✓ Контактный лист: {path}")
 
 
 def write_metadata(path: str, ep, starts: list, chapters: list):
@@ -334,6 +365,7 @@ def interactive():
         print("4. Создать эпизод")
         print("5. Удалить эпизод")
         print("6. Собрать ролик (render)")
+        print("7. Контактный лист кадров (sheet)")
         print("0. Выход")
         choice = input("> ").strip()
 
@@ -377,6 +409,14 @@ def interactive():
             prev = input("Preview? [y/N]: ").strip().lower() == "y"
             render(ep, preview=prev)
 
+        elif choice == "7":
+            ch = pick_channel()
+            if not ch:
+                continue
+            ep = pick_episode(ch)
+            if ep:
+                sheet(ep)
+
         elif choice == "0":
             break
         else:
@@ -411,6 +451,10 @@ def main():
     p_render.add_argument("--preview", action="store_true")
     p_render.add_argument("--channel", default=None)
 
+    p_sheet = sub.add_parser("sheet", help="Контактный лист ключевых кадров (без рендера видео)")
+    p_sheet.add_argument("path")
+    p_sheet.add_argument("--cols", type=int, default=6)
+
     args = parser.parse_args()
 
     if args.cmd is None:
@@ -425,6 +469,8 @@ def main():
         create_episode(args.channel, args.kind, args.short_name)
     elif args.cmd == "render":
         render(args.path, preview=args.preview, channel_override=args.channel)
+    elif args.cmd == "sheet":
+        sheet(args.path, cols=args.cols)
 
 
 if __name__ == "__main__":

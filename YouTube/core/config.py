@@ -26,6 +26,23 @@ class FormatConfig:
     safe_bottom: int
     center_x: int
 
+    # --- композиция по горизонтали -------------------------------------
+    # center_x — ЯКОРЬ композиции (куда по умолчанию встают title/big/meter/субтитры/камера).
+    # Это не геометрический центр кадра (width/2): у Shorts он сдвинут левее на кнопки интерфейса справа.
+    @property
+    def screen_cx(self) -> float:
+        """Геометрический центр логического холста (360 для Shorts -> ровно 540 px на выходе)."""
+        return self.width / 2
+
+    def safe_half(self, cx: float = None) -> float:
+        """Максимальная полуширина блока, симметричного относительно cx, не выходящего за safe_left/safe_right."""
+        cx = self.center_x if cx is None else cx
+        return max(1.0, min(cx - self.safe_left, self.safe_right - cx))
+
+    def safe_w(self, cx: float = None) -> float:
+        """Максимальная ширина блока, симметричного относительно cx, внутри safe-зоны по X."""
+        return 2 * self.safe_half(cx)
+
 
 SHORTS = FormatConfig(
     name="shorts",
@@ -33,7 +50,7 @@ SHORTS = FormatConfig(
     out_width=1080, out_height=1920, supersample=2,
     lead=0.30, tail=0.50, slide=0.35,
     min_pause=0.25, gap=0.14,
-    safe_left=40, safe_right=610, safe_top=80, safe_bottom=1000, center_x=340,
+    safe_left=60, safe_right=610, safe_top=80, safe_bottom=1000, center_x=350,
 )
 
 LONG = FormatConfig(

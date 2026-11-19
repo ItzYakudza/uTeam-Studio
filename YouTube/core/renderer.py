@@ -12,6 +12,7 @@ from PIL import Image
 from .config import FormatConfig
 from .primitives import Canvas, E
 from .audio_sync import SyncResult, make_background_audio
+from . import transitions as _tr
 
 
 def render_episode(
@@ -21,8 +22,10 @@ def render_episode(
     out_path: str,
     channel_name: str = "uTeam",
     work_dir: str = ".",
+    transitions=None,
 ) -> str:
     """
+    transitions — dict {индекс_сцены: "iris" | "zoom:0.5" | ...} из scenes.py (TRANSITIONS); по умолчанию slide.
     work_dir = папка source/ — туда пишутся music_sfx.wav и прочий мусор.
     out_path = финальный mp4 в корне эпизода.
     """
@@ -34,6 +37,7 @@ def render_episode(
     def call(obj, new, old, *args):
         return getattr(obj, new)(*args) if hasattr(obj, new) else getattr(obj, old)(*args)
 
+    trans = dict(transitions or {})
     starts = sync.starts
     durs = sync.durs
     T_list = sync.T
@@ -60,14 +64,11 @@ def render_episode(
         t = Tm - starts[i]
         im = render_frame(i, t, T_list[i])
 
-        if i > 0 and t < cfg.slide:
-            o = E(t / cfg.slide)
-            prev = render_frame(i - 1, durs[i - 1] + t, T_list[i - 1])
-            canvas = Image.new("RGB", (cfg.out_width, cfg.out_height))
-            dx = int(cfg.out_width * o)
-            canvas.paste(prev, (-dx, 0))
-            canvas.paste(im, (cfg.out_width - dx, 0))
-            im = canvas
+        if i > 0:
+            tname, tdur = _tr.parse(trans.get(i), cfg.slide)
+            if t < tdur:
+                prev = render_frame(i - 1, durs[i - 1] + t, T_list[i - 1])
+                im = _tr.apply(tname, prev, im, t / tdur)
 
         if cfg.name.startswith("long") and Tm > total - 1.0:
             black = Image.new("RGB", im.size, (0, 0, 0))

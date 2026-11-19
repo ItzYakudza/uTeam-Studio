@@ -47,17 +47,116 @@ def rg(t: float, a: float, b: float) -> float:
 # ============================================================
 
 class Canvas:
+    """
+    Холст. Все примитивы рисуют в логических координатах (cfg.width x cfg.height),
+    а Canvas переводит их в пиксели через матрицу трансформации.
+
+    Матрица (a, b, c, d, e, f):  x' = a*x + c*y + e ;  y' = b*x + d*y + f
+    Стек матриц позволяет делать камеру, группы (поворот/масштаб/сквош),
+    слои с прозрачностью и клиппинг — см. core/stage.py.
+    """
+
     def __init__(self, cfg: FormatConfig, bg: Tuple[int, int, int]):
         self.cfg = cfg
         self.bg = bg
         self.S = cfg.out_width / cfg.width * cfg.supersample
         self.im = Image.new("RGB", (int(cfg.width * self.S), int(cfg.height * self.S)), bg)
         self.d = ImageDraw.Draw(self.im)
+        self.screen_M = (self.S, 0.0, 0.0, self.S, 0.0, 0.0)
+        self.stack = [self.screen_M]
+        self.ox = 0            # начало текущей поверхности (пиксели) — нужно слоям
+        self.oy = 0
+        self._surfaces = []    # стек поверхностей для слоёв
+        self.muted = 0         # >0 — рисование отключено (невидимая группа)
+        self.camera = None     # параметры камеры (см. stage.cam)
+        self.post = []         # отложенные эффекты на финальном разрешении (fx.flash/vignette)
+
+    # --- трансформации -------------------------------------------------
+    @property
+    def M(self):
+        return self.stack[-1]
+
+    @property
+    def sc(self) -> float:
+        """Масштаб длин (ширина линий, размер шрифта) текущей матрицы."""
+        a, b, c, d, _, _ = self.stack[-1]
+        return math.sqrt(abs(a * d - b * c))
+
+    @property
+    def rot_deg(self) -> float:
+        a, b, _, _, _, _ = self.stack[-1]
+        return math.degrees(math.atan2(b, a))
+
+    def pt(self, x: float, y: float) -> Tuple[float, float]:
+        a, b, c, d, e, f = self.stack[-1]
+        return (a * x + c * y + e - self.ox, b * x + d * y + f - self.oy)
+
+    def push(self, m):
+        """Применить локальную матрицу m поверх текущей."""
+        a1, b1, c1, d1, e1, f1 = self.stack[-1]
+        a2, b2, c2, d2, e2, f2 = m
+        self.stack.append((
+            a1 * a2 + c1 * b2, b1 * a2 + d1 * b2,
+            a1 * c2 + c1 * d2, b1 * c2 + d1 * d2,
+            a1 * e2 + c1 * f2 + e1, b1 * e2 + d1 * f2 + f1,
+        ))
+
+    def push_abs(self, m):
+        """Заменить текущую матрицу на m (абсолютную: логика -> пиксели)."""
+        self.stack.append(tuple(m))
+
+    def pop(self):
+        if len(self.stack) > 1:
+            self.stack.pop()
+
+    def set_world(self, m):
+        """Матрица камеры — основание стека (вызывается из stage.cam)."""
+        self.stack[0] = tuple(m)
+
+    # --- слои (прозрачность / клиппинг) --------------------------------
+    def begin_layer(self, box=None):
+        """box = (x0, y0, x1, y1) в ЛОГИЧЕСКИХ координатах текущей матрицы или None."""
+        W, H = self.im.size
+        if box is None:
+            x0, y0, x1, y1 = self.ox, self.oy, self.ox + W, self.oy + H
+        else:
+            xs, ys = [], []
+            for px, py in ((box[0], box[1]), (box[2], box[1]), (box[2], box[3]), (box[0], box[3])):
+                qx, qy = self.pt(px, py)
+                xs.append(qx + self.ox)
+                ys.append(qy + self.oy)
+            x0, y0 = int(math.floor(min(xs))) - 2, int(math.floor(min(ys))) - 2
+            x1, y1 = int(math.ceil(max(xs))) + 2, int(math.ceil(max(ys))) + 2
+            x0, y0 = max(x0, self.ox), max(y0, self.oy)
+            x1, y1 = min(x1, self.ox + W), min(y1, self.oy + H)
+        w, h = max(1, x1 - x0), max(1, y1 - y0)
+        layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        self._surfaces.append((self.im, self.d, self.ox, self.oy))
+        self.im, self.d = layer, ImageDraw.Draw(layer)
+        self.ox, self.oy = x0, y0
+
+    def end_layer(self, alpha: float = 1.0, mask=None):
+        """Склеить слой с родителем. mask — L-изображение размера слоя (клиппинг)."""
+        layer, lx, ly = self.im, self.ox, self.oy
+        self.im, self.d, self.ox, self.oy = self._surfaces.pop()
+        a = layer.getchannel("A")
+        if mask is not None:
+            from PIL import ImageChops
+            a = ImageChops.multiply(a, mask)
+        if alpha < 0.999:
+            a = a.point(lambda v: int(v * alpha))
+        layer.putalpha(a)
+        pos = (lx - self.ox, ly - self.oy)
+        if self.im.mode == "RGBA":
+            self.im.alpha_composite(layer, (max(0, pos[0]), max(0, pos[1])))
+        else:
+            self.im.paste(layer.convert("RGB"), pos, a)
 
     def final_image(self) -> Image.Image:
-        if self.cfg.supersample > 1:
-            return self.im.reduce(self.cfg.supersample)
-        return self.im
+        im = self.im.reduce(self.cfg.supersample) if self.cfg.supersample > 1 else self.im
+        for fn in self.post:
+            im = fn(im)
+        return im
 
 
 # ============================================================
@@ -106,25 +205,31 @@ def wob(pts: List[Tuple[float, float]], amp: float = 0.9) -> List[Tuple[float, f
 
 
 def line(cv: Canvas, pts: List[Tuple[float, float]], w: float = 6, col=INK):
-    P = [(x * cv.S, y * cv.S) for x, y in wob(pts)]
-    cv.d.line(P, fill=col, width=max(1, int(w * cv.S)), joint="curve")
-    r = w * cv.S / 2
+    if cv.muted:
+        return
+    P = [cv.pt(x, y) for x, y in wob(pts)]
+    wp = max(1, int(w * cv.sc))
+    cv.d.line(P, fill=col, width=wp, joint="curve")
+    r = w * cv.sc / 2
     for x, y in (P[0], P[-1]):
         cv.d.ellipse([x - r, y - r, x + r, y + r], fill=col)
 
 
 def poly(cv: Canvas, pts: List[Tuple[float, float]], fill=None, w: float = 6, col=INK):
-    P = [(x * cv.S, y * cv.S) for x, y in wob(list(pts) + [pts[0]])]
+    if cv.muted:
+        return
+    P = [cv.pt(x, y) for x, y in wob(list(pts) + [pts[0]])]
     if fill:
         cv.d.polygon(P, fill=fill)
     if w:
-        cv.d.line(P, fill=col, width=max(1, int(w * cv.S)), joint="curve")
+        cv.d.line(P, fill=col, width=max(1, int(w * cv.sc)), joint="curve")
 
 
 def ell(cv: Canvas, cx: float, cy: float, rx: float, ry: float = None,
         fill=None, w: float = 6, col=INK, a0: float = 0, a1: float = 360):
     ry = rx if ry is None else ry
-    n = 40
+    zoom = cv.sc / cv.S if cv.S else 1.0
+    n = 40 if zoom <= 1.3 else int(min(160, 40 * zoom))
     pts = [
         (cx + rx * math.cos(math.radians(a0 + (a1 - a0) * i / n)),
          cy + ry * math.sin(math.radians(a0 + (a1 - a0) * i / n)))
@@ -157,16 +262,47 @@ def rrect(cv: Canvas, x0: float, y0: float, x1: float, y1: float, r: float,
 
 def text(cv: Canvas, x: float, y: float, s: str, size: float,
          col=INK, anchor: str = "mm", stroke: float = 0,
-         alpha: float = 1.0, scale: float = 1.0):
-    if alpha <= 0.02 or scale <= 0.02:
+         alpha: float = 1.0, scale: float = 1.0, rot: float = 0.0,
+         stroke_col=INK):
+    """
+    rot — поворот текста в градусах (по часовой). Поворот камеры/группы учитывается автоматически.
+    stroke_col — цвет обводки (по умолчанию INK, как раньше).
+    """
+    if cv.muted or alpha <= 0.02 or scale <= 0.02:
         return
-    font = get_font(int(size * cv.S * scale))
+    font = get_font(int(size * cv.sc * scale))
     fill = mix(cv.bg, col, min(1.0, alpha))
-    cv.d.text(
-        (x * cv.S, y * cv.S), s,
-        font=font, fill=fill, anchor=anchor,
-        stroke_width=int(stroke * cv.S), stroke_fill=INK
-    )
+    px, py = cv.pt(x, y)
+    sw = int(stroke * cv.sc)
+    total_rot = rot + cv.rot_deg
+    if abs(total_rot) < 0.05:
+        cv.d.text((px, py), s, font=font, fill=fill, anchor=anchor,
+                  stroke_width=sw, stroke_fill=stroke_col)
+        return
+    # повёрнутый текст: тугой слой по bbox текста, поворот, и якорь встаёт точно в (px, py)
+    probe = ImageDraw.Draw(Image.new("L", (1, 1)))
+    try:
+        bx0, by0, bx1, by1 = probe.multiline_textbbox((0, 0), s, font=font, anchor=anchor, stroke_width=sw) \
+            if "\n" in s else probe.textbbox((0, 0), s, font=font, anchor=anchor, stroke_width=sw)
+    except ValueError:
+        bx0, by0, bx1, by1 = probe.textbbox((0, 0), s, font=font, anchor="la", stroke_width=sw)
+        anchor = "la"
+    pad = 4 + sw
+    lw_, lh_ = int(bx1 - bx0) + 2 * pad, int(by1 - by0) + 2 * pad
+    ax, ay = pad - bx0, pad - by0                      # где в слое лежит точка привязки
+    tmp = Image.new("RGBA", (max(1, lw_), max(1, lh_)), (0, 0, 0, 0))
+    ImageDraw.Draw(tmp).text((ax, ay), s, font=font, fill=fill + (255,), anchor=anchor,
+                             stroke_width=sw, stroke_fill=stroke_col + (255,))
+    big = tmp.rotate(-total_rot, resample=Image.BICUBIC, expand=True)
+    th = math.radians(total_rot)
+    vx, vy = ax - tmp.width / 2, ay - tmp.height / 2
+    rx = vx * math.cos(th) - vy * math.sin(th)
+    ry = vx * math.sin(th) + vy * math.cos(th)
+    pos = (int(round(px - (big.width / 2 + rx))), int(round(py - (big.height / 2 + ry))))
+    if cv.im.mode == "RGBA":
+        cv.im.alpha_composite(big, (max(0, pos[0]), max(0, pos[1])))
+    else:
+        cv.im.paste(big.convert("RGB"), pos, big.getchannel("A"))
 
 
 def twidth(s: str, size: float) -> float:
@@ -178,10 +314,24 @@ def fit(s: str, size: float, maxw: float = 520) -> float:
     return size if w <= maxw else size * maxw / w
 
 
+def fit_safe(cv: Canvas, s: str, size: float, x: float = None, min_k: float = 0.0) -> float:
+    """
+    fit() под safe-зону: текст, центрированный в x (по умолчанию cfg.center_x), строго не заходит за
+    safe_left/safe_right (для center_x=350 это максимум 520 px по ширине).
+    Если x далеко от центра, допустимая ширина мала и кегль сильно уменьшится — тогда сдвинь объект
+    или перенеси строку; min_k>0 задаёт нижний предел кегля (size*min_k), но safe-зону тогда не гарантирует.
+    """
+    x = cv.cfg.center_x if x is None else x
+    return max(fit(s, size, cv.cfg.safe_w(x)), size * min_k)
+
+
 def title(cv: Canvas, t: float, s: str, size: float = 54, y: float = 70,
           col=INK, a: float = 0.1, ul=(235, 90, 70), cx: float = None):
     if cx is None:
         cx = cv.cfg.center_x
+    # карандаш на конце подчёркивания выступает вправо на ~36 px — учитываем его, чтобы всё осталось в safe-зоне
+    avail = min(cv.cfg.safe_w(cx), 2 * (cv.cfg.safe_right - cx - 36)) / 1.02
+    size = fit(s, size, max(avail, 40))
     text(cv, cx, y, s, size, col, scale=pop(t, a), stroke=(2 if col[0] > 200 else 0))
     u = ph(t, a + 0.3, a + 1.0)
     if u > 0:
@@ -199,7 +349,7 @@ def big(cv: Canvas, t: float, a: float, s: str, y: float, size: float = 64,
     if x is None:
         x = cv.cfg.center_x
     al = 1.0 if out is None else 1 - fa(t, out, 0.25)
-    text(cv, x, y, s, fit(s, size), col, scale=pop(t, a), alpha=al, stroke=stroke)
+    text(cv, x, y, s, fit_safe(cv, s, size, x), col, scale=pop(t, a), alpha=al, stroke=stroke)
 
 
 # ============================================================
@@ -408,9 +558,12 @@ def clock(cv: Canvas, x: float, y: float, r: float, hh: float, mm: float, k: flo
 
 
 def meter(cv: Canvas, t: float, y: float, lv: float, col, label: str, a: float,
-          x0: float = 105, x1: float = 505, cx: float = None):
+          x0: float = None, x1: float = None, cx: float = None):
     if cx is None:
         cx = cv.cfg.center_x
+    if x0 is None or x1 is None:           # по умолчанию шкала симметрична относительно cx (400 px)
+        half = min(200.0, cv.cfg.safe_half(cx))
+        x0, x1 = cx - half, cx + half
     text(cv, cx, y - 60, label, 36, alpha=fa(t, a))
     if fa(t, a, 0.3) <= 0.02:
         return

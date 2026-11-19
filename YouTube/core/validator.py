@@ -52,7 +52,8 @@ def validate_scenes(
     if mode == "shorts":
         warnings.append(
             f"Remember safe-zone: x∈[{cfg.safe_left}..{cfg.safe_right}], "
-            f"y∈[{cfg.safe_top}..{cfg.safe_bottom}]"
+            f"y∈[{cfg.safe_top}..{cfg.safe_bottom}]; центр композиции X={cfg.center_x}, "
+            f"симметричный блок не шире {cfg.safe_w():.0f}px (центр кадра X={cfg.screen_cx:.0f})"
         )
 
     # Вывод
