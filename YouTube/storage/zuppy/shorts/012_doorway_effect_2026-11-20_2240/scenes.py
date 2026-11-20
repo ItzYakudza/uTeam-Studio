@@ -4,6 +4,7 @@ Channel: zuppy
 Topic: doorway effect / location updating and event segmentation
 """
 
+import math
 from core.toolkit import *
 
 MODE = "shorts"
@@ -79,7 +80,7 @@ def thesis(cv, t, T, k, line1, line2=None, col=WHITE, second=YELLOW):
 
 def doorway(cv, cx, cy, scale=1.0, col=WHITE, fill=None):
     w, h = 170 * scale, 245 * scale
-    rrect(cv, cx - w, cy - h, cx + w, cy + h, 18, fill, 8, col=col)
+    line(cv, [(cx - w, cy + h), (cx - w, cy - h), (cx + w, cy - h), (cx + w, cy + h)], 10, col)
     line(cv, [(cx + 35 * scale, cy - h + 10), (cx + 35 * scale, cy + h - 10)], 5, col)
     ell(cv, cx + 5 * scale, cy + 8 * scale, 7 * scale, fill=YELLOW, w=0)
 
@@ -138,8 +139,8 @@ def s03(cv, t, T):
     cx = cv.cfg.center_x
     rrect(cv, 0, 0, 720, 1280, 1, (220, 235, 249), 0)
     # Two event models: the old room fades as the new one takes focus.
-    rrect(cv, 65, 300, 320, 690, 26, (250, 250, 255), 6, col=BLUE)
-    rrect(cv, 380, 300, 655, 690, 26, (250, 250, 255), 6, col=GREEN)
+    rrect(cv, 65, 300, 320, 690, 26, (250, 250, 255), 6)
+    rrect(cv, 380, 300, 655, 690, 26, (250, 250, 255), 6)
     text(cv, 192, 350, "OLD ROOM", 31, BLUE)
     text(cv, 517, 350, "NEW ROOM", 31, GREEN)
     keys(cv, 165, 505, 0.55, YELLOW)
