@@ -16,6 +16,7 @@ QoL:
 
 import os
 import sys
+from pathlib import Path
 try:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -38,7 +39,6 @@ import traceback
 import platform
 import subprocess
 from datetime import datetime
-from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 CHANNELS = ROOT / "channels"
