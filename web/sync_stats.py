@@ -223,8 +223,7 @@ def sync_slow() -> dict:
             log.warning("Slow sync failed for %s: %s", vid, exc)
     with _state_lock:
         _state["slow_status"] = "partial" if failed else "ok"
-        if synced:
-            _state["last_slow_sync_at"] = now
+        _state["last_slow_sync_at"] = now
         _state["last_error"] = f"{len(failed)} slow sync error(s)" if failed else None
     _save_state()
     log.info("Slow sync: %s updated, %s pending, %s failed", synced, pending, len(failed))
