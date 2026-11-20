@@ -31,11 +31,29 @@ import youtube_sync as YT
 import youtube_data as YD
 import worker as W
 import oauth_youtube as OYT
+import sync_stats as SS
 
 D.init_db()
-W.start(interval_sec=3600)
 
-app = FastAPI(title="uTeam-Studio", version="2.0.0")
+app = FastAPI(title="uTeam-Studio", version="2.1.0")
+_stats_sync_task: Optional[asyncio.Task] = None
+
+@app.on_event("startup")
+async def start_background_stats_sync():
+    global _stats_sync_task
+    if _stats_sync_task is None or _stats_sync_task.done():
+        _stats_sync_task = asyncio.create_task(SS.background_sync_loop(), name="background_sync_loop")
+
+@app.on_event("shutdown")
+async def stop_background_stats_sync():
+    global _stats_sync_task
+    if _stats_sync_task and not _stats_sync_task.done():
+        _stats_sync_task.cancel()
+        try:
+            await _stats_sync_task
+        except asyncio.CancelledError:
+            pass
+        _stats_sync_task = None
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -86,6 +104,19 @@ class CleanIn(BaseModel):
 
 
 # ---- health / doctor / migrate ----
+@app.get("/api/sync-status")
+def sync_status():
+    return SS.get_state()
+
+
+@app.post("/api/sync-now")
+async def sync_now():
+    result = await asyncio.to_thread(SS.sync_fast)
+    if not result.get("ok") and result.get("reason") != "sync already running":
+        raise HTTPException(503, result.get("error") or result.get("reason") or "Sync failed")
+    return {"ok": True, "fast": result, "sync": SS.get_state()}
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "version": "2.0.0", "db": str(D.DB_PATH), "storage": str(D.STORAGE)}
@@ -1003,30 +1034,7 @@ class StatsIn(BaseModel):
 
 
 @app.get("/api/analytics/summary")
-def analytics_summary(channel_id: Optional[int] = None, background_tasks: BackgroundTasks = None):
-    # If OAuth is live and last worker run is older than ~12 min, kick a background sync
-    # so the UI never needs a manual refresh button.
-    try:
-        st = W.get_state()
-        oauth_on = OYT.status().get("connected")
-        last = st.get("last_run")
-        stale = True
-        if last:
-            from datetime import datetime, timezone
-            try:
-                # last_run is local iso from db._now()
-                ts = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
-                if ts.tzinfo is None:
-                    age = (datetime.now() - ts).total_seconds()
-                else:
-                    age = (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds()
-                stale = age > 12 * 60
-            except Exception:
-                stale = True
-        if oauth_on and stale and background_tasks is not None:
-            background_tasks.add_task(W.sync_all)
-    except Exception:
-        pass
+def analytics_summary(channel_id: Optional[int] = None):
     base = D.analytics_summary(channel_id=channel_id)
     # enrich with per-episode latest from youtube_data, respect include_in_aggregate
     eps = D.list_episodes(channel_id=channel_id)
@@ -1061,6 +1069,7 @@ def analytics_summary(channel_id: Optional[int] = None, background_tasks: Backgr
     active_sorted = sorted(active, key=lambda x: x["views"], reverse=True)
     base["top_videos"] = active_sorted[:15]
     base["all_videos"] = active_sorted + excluded
+    base["last_sync_at"] = SS.get_state().get("last_sync_at")
     base["total_views"] = sum(v["views"] for v in active)
     base["total_likes"] = sum(v["likes"] for v in active)
     base["total_comments"] = sum(v["comments"] for v in active)
