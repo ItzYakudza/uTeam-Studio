@@ -765,7 +765,7 @@ export default function App()
             </div>
           )}
           <div className="row">
-            <span className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }} title={lastSyncAt || 'Синхронизация ещё не выполнялась'}>
+            <span className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap', padding: '5px 9px', border: '1px solid var(--border)', borderRadius: 999, background: 'var(--panel)' }} title={lastSyncAt || 'Синхронизация ещё не выполнялась'}>
               Последнее обновление: {lastSyncAt ? new Date(lastSyncAt).toLocaleTimeString('ru-RU', { hour12: false }) : '—'}
             </span>
             <button className="btn btn-primary btn-sm" onClick={syncNow} disabled={syncNowBusy}>
