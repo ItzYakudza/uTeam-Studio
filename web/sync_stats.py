@@ -236,7 +236,7 @@ async def background_sync_loop() -> None:
             await asyncio.to_thread(sync_fast)
             next_fast = loop.time() + FAST_INTERVAL_SEC
         state = get_state()
-        if now >= next_slow or not state.get("last_slow_sync_at"):
+        if now >= next_slow:
             await asyncio.to_thread(sync_slow)
             next_slow = loop.time() + SLOW_INTERVAL_SEC
         await asyncio.sleep(30)
