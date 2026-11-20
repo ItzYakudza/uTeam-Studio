@@ -119,7 +119,7 @@ async def sync_now():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "2.0.0", "db": str(D.DB_PATH), "storage": str(D.STORAGE)}
+    return {"ok": True, "version": "2.1.0", "db": str(D.DB_PATH), "storage": str(D.STORAGE)}
 
 
 @app.get("/api/doctor")
