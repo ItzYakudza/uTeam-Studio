@@ -205,6 +205,7 @@ def episodes(
             e["title"] = disp["title"]
         e["has_preview"] = bool(disp.get("has_preview"))
         e["has_thumb"] = bool(disp.get("has_preview"))
+        e["duration_sec"] = disp.get("duration_sec") or ep.get("duration_sec")
         e["youtube_available"] = disp.get("youtube_available")
         e["display_source"] = disp.get("source")
         if disp.get("views") is not None:
