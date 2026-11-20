@@ -280,6 +280,30 @@ def fetch_video_public_stats(video_id: str) -> dict:
     }
 
 
+
+def fetch_videos_public_stats(video_ids: list[str]) -> dict[str, dict]:
+    """Fetch statistics for up to 50 videos in one Data API v3 request."""
+    ids = [str(v).strip() for v in (video_ids or []) if v]
+    result: dict[str, dict] = {}
+    for offset in range(0, len(ids), 50):
+        batch = ids[offset:offset + 50]
+        params = {"part": "statistics", "id": ",".join(batch)}
+        url = "https://www.googleapis.com/youtube/v3/videos?" + urllib.parse.urlencode(params)
+        data = _http_json("GET", url, headers=_auth_headers())
+        for item in data.get("items") or []:
+            vid = item.get("id")
+            st = item.get("statistics") or {}
+            if vid:
+                result[vid] = {
+                    "ok": True, "video_id": vid,
+                    "views": int(st.get("viewCount") or 0),
+                    "likes": int(st.get("likeCount") or 0),
+                    "comments": int(st.get("commentCount") or 0),
+                    "source": "youtube-data-api-v3",
+                }
+    return result
+
+
 def video_age_hours(published_at: Optional[str]) -> Optional[float]:
     """Hours since publish, or None if unknown."""
     if not published_at:
