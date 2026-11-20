@@ -170,7 +170,7 @@ def sync_slow() -> dict:
     # Discover newly published channel uploads without running the old full,
     # slow per-video sync. The fast collector picks them up on its next cycle.
     try:
-        discovery = W.import_from_oauth(max_videos=100, sync_stats=False)
+        discovery = W.import_from_oauth(max_videos=500, sync_stats=False)
         log.info("Channel discovery: %s created, %s linked", discovery.get("created", 0), discovery.get("synced", 0))
     except Exception as exc:
         log.warning("Channel discovery failed: %s", exc)
