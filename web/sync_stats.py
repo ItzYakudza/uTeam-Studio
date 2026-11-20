@@ -229,13 +229,22 @@ async def background_sync_loop() -> None:
     _load_state()
     loop = asyncio.get_running_loop()
     next_fast = 0.0
+    saved_slow = get_state().get("last_slow_sync_at")
     next_slow = 0.0
+    if saved_slow:
+        try:
+            last = datetime.fromisoformat(str(saved_slow).replace("Z", "+00:00"))
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - last.astimezone(timezone.utc)).total_seconds()
+            next_slow = loop.time() + max(0.0, SLOW_INTERVAL_SEC - age)
+        except Exception:
+            next_slow = 0.0
     while True:
         now = loop.time()
         if now >= next_fast:
             await asyncio.to_thread(sync_fast)
             next_fast = loop.time() + FAST_INTERVAL_SEC
-        state = get_state()
         if now >= next_slow:
             await asyncio.to_thread(sync_slow)
             next_slow = loop.time() + SLOW_INTERVAL_SEC
