@@ -1,280 +1,578 @@
 """
 uTeam-Studio
-core/fx.py — экранные эффекты (вспышка, виньетка, прожектор, глитч, letterbox)
-и частицы (конфетти, искры, дождь, снег, пузыри, дым, взрыв). Без состояния: всё зависит только от t.
+core/primitives.py — карандашный движок, персонажи, объекты.
 """
 
 import math
-from typing import Sequence, Tuple
+from typing import List, Tuple, Optional
 
-import numpy as np
-from PIL import Image, ImageChops
+from PIL import Image, ImageDraw, ImageFont
 
-from .config import INK, WHITE
-from .primitives import Canvas, line, poly, ell, mix, ph, E
-from .anim import rnd, decay, clamp, wiggle
+from .config import FormatConfig, INK, WHITE
 
-_mask_cache = {}
+# ============================================================
+# Easing
+# ============================================================
+
+def seg(t: float, a: float, b: float) -> float:
+    return min(1.0, max(0.0, (t - a) / (b - a) if b != a else 1.0))
+
+def E(x: float) -> float:
+    return x * x * (3 - 2 * x)
+
+def ph(p: float, a: float, b: float) -> float:
+    return E(seg(p, a, b))
+
+def back(x: float) -> float:
+    x = seg(x, 0, 1)
+    c = 1.70158
+    return 1 + (c + 1) * (x - 1) ** 3 + c * (x - 1) ** 2
+
+def mix(a: Tuple[int, int, int], b: Tuple[int, int, int], k: float) -> Tuple[int, int, int]:
+    k = max(0.0, min(1.0, k))
+    return tuple(int(a[i] + (b[i] - a[i]) * k) for i in range(3))
+
+def pop(t: float, a: float, d: float = 0.45) -> float:
+    return back((t - a) / d) if d > 0 else 1.0
+
+def fa(t: float, a: float, d: float = 0.4) -> float:
+    return ph(t, a, a + d)
+
+def rg(t: float, a: float, b: float) -> float:
+    return ph(t, a, max(b, a + 0.3))
 
 
 # ============================================================
-# Экранные эффекты (работают в пикселях всего холста, поверх нарисованного)
+# Canvas
 # ============================================================
 
-def _overlay(cv: Canvas, col, mask: Image.Image):
-    """Наложить цвет col через L-маску (размером с холст)."""
-    cv.im.paste(col, (0, 0), mask)
-
-
-def flash(cv: Canvas, t: float, a: float, d: float = 0.25, col=WHITE, peak: float = 0.9):
+class Canvas:
     """
-    Белая (или цветная) вспышка в момент a, затухает за d секунд.
-    Накладывается ПОВЕРХ всего кадра при его выдаче (быстро, порядок вызова не важен).
+    Холст. Все примитивы рисуют в логических координатах (cfg.width x cfg.height),
+    а Canvas переводит их в пиксели через матрицу трансформации.
+
+    Матрица (a, b, c, d, e, f):  x' = a*x + c*y + e ;  y' = b*x + d*y + f
+    Стек матриц позволяет делать камеру, группы (поворот/масштаб/сквош),
+    слои с прозрачностью и клиппинг — см. core/stage.py.
     """
-    if not (a <= t <= a + d):
-        return
-    k = (1 - (t - a) / d) * peak
-    cv.post.append(lambda im: Image.blend(im, Image.new("RGB", im.size, col), k))
 
+    def __init__(self, cfg: FormatConfig, bg: Tuple[int, int, int]):
+        self.cfg = cfg
+        self.bg = bg
+        self.S = cfg.out_width / cfg.width * cfg.supersample
+        self.im = Image.new("RGB", (int(cfg.width * self.S), int(cfg.height * self.S)), bg)
+        self.d = ImageDraw.Draw(self.im)
+        self.screen_M = (self.S, 0.0, 0.0, self.S, 0.0, 0.0)
+        self.stack = [self.screen_M]
+        self.ox = 0            # начало текущей поверхности (пиксели) — нужно слоям
+        self.oy = 0
+        self._surfaces = []    # стек поверхностей для слоёв
+        self.muted = 0         # >0 — рисование отключено (невидимая группа)
+        self.camera = None     # параметры камеры (см. stage.cam)
+        self.post = []         # отложенные эффекты на финальном разрешении (fx.flash/vignette)
 
-def tint(cv: Canvas, col, alpha: float):
-    """Залить весь кадр цветом с прозрачностью (затемнение, «красная тревога», ночь)."""
-    if alpha > 0.01:
-        _overlay(cv, col, Image.new("L", cv.im.size, int(255 * clamp(alpha))))
+    # --- трансформации -------------------------------------------------
+    @property
+    def M(self):
+        return self.stack[-1]
 
+    @property
+    def sc(self) -> float:
+        """Масштаб длин (ширина линий, размер шрифта) текущей матрицы."""
+        a, b, c, d, _, _ = self.stack[-1]
+        return math.sqrt(abs(a * d - b * c))
 
-def _radial_mask(size, cx, cy, r_in, r_out, invert):
-    """Мягкая радиальная маска, считается в низком разрешении и растягивается (быстро)."""
-    W, H = size
-    sc = 8
-    w, h = max(2, W // sc), max(2, H // sc)
-    yy, xx = np.mgrid[0:h, 0:w]
-    dist = np.hypot((xx + 0.5) * sc - cx, (yy + 0.5) * sc - cy)
-    k = np.clip((dist - r_in) / max(1.0, (r_out - r_in)), 0, 1)
-    if not invert:
-        k = 1 - k
-    k = k * k * (3 - 2 * k)
-    return Image.fromarray((k * 255).astype(np.uint8), "L").resize(size, Image.BILINEAR)
+    @property
+    def rot_deg(self) -> float:
+        a, b, _, _, _, _ = self.stack[-1]
+        return math.degrees(math.atan2(b, a))
 
+    def pt(self, x: float, y: float) -> Tuple[float, float]:
+        a, b, c, d, e, f = self.stack[-1]
+        return (a * x + c * y + e - self.ox, b * x + d * y + f - self.oy)
 
-def vignette(cv: Canvas, strength: float = 0.45, col=(0, 0, 0)):
-    """
-    Затемнение по краям кадра — фокусирует взгляд на центре.
-    Накладывается ПОВЕРХ всего кадра при выдаче (быстро; маска кэшируется).
-    """
-    def apply(im):
-        W, H = im.size
-        key = ("vig", W, H, round(strength, 2))
-        if key not in _mask_cache:
-            m = _radial_mask((W, H), W / 2, H / 2, min(W, H) * 0.45, math.hypot(W, H) * 0.55, invert=True)
-            _mask_cache[key] = m.point(lambda v: int(v * strength))
-        im = im.copy()
-        im.paste(col, (0, 0), _mask_cache[key])
+    def push(self, m):
+        """Применить локальную матрицу m поверх текущей."""
+        a1, b1, c1, d1, e1, f1 = self.stack[-1]
+        a2, b2, c2, d2, e2, f2 = m
+        self.stack.append((
+            a1 * a2 + c1 * b2, b1 * a2 + d1 * b2,
+            a1 * c2 + c1 * d2, b1 * c2 + d1 * d2,
+            a1 * e2 + c1 * f2 + e1, b1 * e2 + d1 * f2 + f1,
+        ))
+
+    def push_abs(self, m):
+        """Заменить текущую матрицу на m (абсолютную: логика -> пиксели)."""
+        self.stack.append(tuple(m))
+
+    def pop(self):
+        if len(self.stack) > 1:
+            self.stack.pop()
+
+    def set_world(self, m):
+        """Матрица камеры — основание стека (вызывается из stage.cam)."""
+        self.stack[0] = tuple(m)
+
+    # --- слои (прозрачность / клиппинг) --------------------------------
+    def begin_layer(self, box=None):
+        """box = (x0, y0, x1, y1) в ЛОГИЧЕСКИХ координатах текущей матрицы или None."""
+        W, H = self.im.size
+        if box is None:
+            x0, y0, x1, y1 = self.ox, self.oy, self.ox + W, self.oy + H
+        else:
+            xs, ys = [], []
+            for px, py in ((box[0], box[1]), (box[2], box[1]), (box[2], box[3]), (box[0], box[3])):
+                qx, qy = self.pt(px, py)
+                xs.append(qx + self.ox)
+                ys.append(qy + self.oy)
+            x0, y0 = int(math.floor(min(xs))) - 2, int(math.floor(min(ys))) - 2
+            x1, y1 = int(math.ceil(max(xs))) + 2, int(math.ceil(max(ys))) + 2
+            x0, y0 = max(x0, self.ox), max(y0, self.oy)
+            x1, y1 = min(x1, self.ox + W), min(y1, self.oy + H)
+        w, h = max(1, x1 - x0), max(1, y1 - y0)
+        layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        self._surfaces.append((self.im, self.d, self.ox, self.oy))
+        self.im, self.d = layer, ImageDraw.Draw(layer)
+        self.ox, self.oy = x0, y0
+
+    def end_layer(self, alpha: float = 1.0, mask=None):
+        """Склеить слой с родителем. mask — L-изображение размера слоя (клиппинг)."""
+        layer, lx, ly = self.im, self.ox, self.oy
+        self.im, self.d, self.ox, self.oy = self._surfaces.pop()
+        a = layer.getchannel("A")
+        if mask is not None:
+            from PIL import ImageChops
+            a = ImageChops.multiply(a, mask)
+        if alpha < 0.999:
+            a = a.point(lambda v: int(v * alpha))
+        layer.putalpha(a)
+        pos = (lx - self.ox, ly - self.oy)
+        if self.im.mode == "RGBA":
+            self.im.alpha_composite(layer, (max(0, pos[0]), max(0, pos[1])))
+        else:
+            self.im.paste(layer.convert("RGB"), pos, a)
+
+    def final_image(self) -> Image.Image:
+        im = self.im.reduce(self.cfg.supersample) if self.cfg.supersample > 1 else self.im
+        for fn in self.post:
+            im = fn(im)
         return im
-    cv.post.append(apply)
-
-
-def spotlight(cv: Canvas, x: float, y: float, r: float, dark: float = 0.65, soft: float = 0.5,
-              col=(0, 0, 0)):
-    """
-    «Прожектор»: всё затемнено, кроме круга радиуса r вокруг точки мира (x, y). Классический акцент в explainer.
-    soft — мягкость края (доля радиуса).
-    """
-    px, py = cv.pt(x, y)
-    pr = r * cv.sc
-    m = _radial_mask(cv.im.size, px + cv.ox, py + cv.oy, pr, pr * (1 + soft), invert=True)
-    _overlay(cv, col, m.point(lambda v: int(v * dark)))
-
-
-def letterbox(cv: Canvas, k: float = 0.1, col=(0, 0, 0)):
-    """Чёрные полосы сверху/снизу (k — доля высоты каждой). Кинематографичный акцент."""
-    if k <= 0.001:
-        return
-    W, H = cv.im.size
-    h = int(H * k)
-    cv.d.rectangle([0, 0, W, h], fill=col)
-    cv.d.rectangle([0, H - h, W, H], fill=col)
-
-
-def glitch(cv: Canvas, t: float, a: float, d: float = 0.3, amount: float = 0.06, seed: int = 0):
-    """RGB-сдвиг и горизонтальные «порванные» полосы в течение d секунд после a (шок-хук, ошибка, помехи)."""
-    if not (a <= t <= a + d):
-        return
-    W, H = cv.im.size
-    k = 1 - (t - a) / d
-    fr = int(t * 30)
-    im = cv.im
-    r, g, b = im.split()
-    sh = int(W * amount * k * (0.5 + rnd(fr + seed)))
-    r = ImageChops.offset(r, sh, 0)
-    b = ImageChops.offset(b, -sh, 0)
-    im2 = Image.merge("RGB", (r, g, b))
-    for i in range(int(3 + 7 * k)):
-        y0 = int(rnd(fr * 13 + i * 5 + seed) * H)
-        hh = int(H * (0.01 + 0.05 * rnd(fr * 7 + i + seed)))
-        dx = int((rnd(fr * 3 + i * 11 + seed) - 0.5) * W * 0.25 * k)
-        strip = im2.crop((0, y0, W, min(H, y0 + hh)))
-        im2.paste(ImageChops.offset(strip, dx, 0), (0, y0))
-    cv.im.paste(im2)
 
 
 # ============================================================
-# Частицы
+# Fonts
 # ============================================================
 
-CONFETTI_COLS = [(235, 90, 80), (250, 205, 50), (90, 150, 240), (110, 200, 110), (248, 160, 190), (165, 125, 225)]
+_font_cache = {}
+
+def get_font(size: int):
+    size = max(8, int(size))
+    if size not in _font_cache:
+        for name in ("comicbd.ttf", "comic.ttf", "segoepr.ttf", "arialbd.ttf",
+                     "DejaVuSans-Bold.ttf", "Arial.ttf"):
+            try:
+                _font_cache[size] = ImageFont.truetype(name, size)
+                break
+            except Exception:
+                continue
+        else:
+            _font_cache[size] = ImageFont.load_default()
+    return _font_cache[size]
 
 
-def confetti(cv: Canvas, t: float, a: float, cx: float, cy: float, n: int = 40, spread: float = 260,
-             power: float = 520, gravity: float = 900, life: float = 1.8, size: float = 11, seed: int = 0,
-             colors=CONFETTI_COLS):
-    """Салют из конфетти: вылет из точки (cx, cy) в момент a."""
-    u = t - a
-    if u < 0 or u > life:
+# ============================================================
+# Geometry + pencil wobble
+# ============================================================
+
+def _subdivide(pts: List[Tuple[float, float]], step: float = 22) -> List[Tuple[float, float]]:
+    out = [pts[0]]
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        dist = math.hypot(x1 - x0, y1 - y0)
+        n = max(1, int(dist // step))
+        for i in range(1, n + 1):
+            out.append((x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n))
+    return out
+
+
+def wob(pts: List[Tuple[float, float]], amp: float = 0.9) -> List[Tuple[float, float]]:
+    P = _subdivide(pts)
+    x0, y0 = P[0]
+    return [
+        (x + amp * math.sin(0.05 * (x - x0) + 0.07 * (y - y0)),
+         y + amp * math.cos(0.06 * (x - x0) - 0.04 * (y - y0)))
+        for x, y in P
+    ]
+
+
+def line(cv: Canvas, pts: List[Tuple[float, float]], w: float = 6, col=INK):
+    if cv.muted:
         return
-    for i in range(n):
-        ang = math.radians(-90 + (rnd(i * 3 + seed) - 0.5) * spread)
-        v = power * (0.35 + 0.65 * rnd(i * 5 + 1 + seed))
-        x = cx + math.cos(ang) * v * u * 0.55 + (rnd(i + 9) - 0.5) * 20
-        y = cy + math.sin(ang) * v * u + 0.5 * gravity * u * u * 0.5
-        rot = (rnd(i * 7 + seed) * 360 + u * 360 * (rnd(i) - 0.5) * 3)
-        fade = 1.0 if u < life * 0.7 else 1 - (u - life * 0.7) / (life * 0.3)
-        w, h = size * (0.7 + rnd(i + 2)), size * 0.45 * (0.6 + rnd(i + 4))
-        c = colors[i % len(colors)]
-        c = mix(cv.bg, c, fade)
-        ca, sa = math.cos(math.radians(rot)), math.sin(math.radians(rot))
-        pts = [cv.pt(x + (dx * ca - dy * sa), y + (dx * sa + dy * ca))
-               for dx, dy in ((-w, -h), (w, -h), (w, h), (-w, h))]
-        cv.d.polygon(pts, fill=c)
+    P = [cv.pt(x, y) for x, y in wob(pts)]
+    wp = max(1, int(w * cv.sc))
+    cv.d.line(P, fill=col, width=wp, joint="curve")
+    r = w * cv.sc / 2
+    for x, y in (P[0], P[-1]):
+        cv.d.ellipse([x - r, y - r, x + r, y + r], fill=col)
 
 
-def sparkles(cv: Canvas, t: float, cx: float, cy: float, r: float = 120, n: int = 6, size: float = 16,
-             col=(250, 205, 50), seed: int = 0, speed: float = 1.4):
-    """Мерцающие четырёхлучевые звёздочки вокруг точки (бесконечно)."""
-    for i in range(n):
-        ph_ = (t * speed * (0.6 + 0.8 * rnd(i + seed)) + rnd(i * 3 + seed)) % 1.0
-        k = math.sin(math.pi * ph_)
-        if k < 0.05:
-            continue
-        ang = rnd(i * 5 + seed + ((t * speed) // 1)) * math.tau
-        rr = r * (0.55 + 0.6 * rnd(i * 7 + seed))
-        x, y = cx + rr * math.cos(ang), cy + rr * math.sin(ang)
-        s = size * k
-        poly(cv, [(x, y - s), (x + s * 0.28, y - s * 0.28), (x + s, y), (x + s * 0.28, y + s * 0.28),
-                  (x, y + s), (x - s * 0.28, y + s * 0.28), (x - s, y), (x - s * 0.28, y - s * 0.28)],
-             col, 3)
-
-
-def rain(cv: Canvas, t: float, n: int = 60, col=(110, 160, 230), length: float = 38, speed: float = 900,
-         seed: int = 0, slant: float = 0.18, w: float = 4):
-    """Дождь на весь экран (логические координаты)."""
-    cfg = cv.cfg
-    for i in range(n):
-        x0 = rnd(i * 3 + seed) * (cfg.width + 200) - 100
-        ph_ = (t * speed / (cfg.height + 100) * (0.8 + 0.4 * rnd(i + seed)) + rnd(i * 7 + seed)) % 1.0
-        y = -50 + ph_ * (cfg.height + 100)
-        x = x0 + y * slant
-        line(cv, [(x, y), (x + slant * length, y + length)], w, col)
-
-
-def snow(cv: Canvas, t: float, n: int = 50, col=WHITE, speed: float = 90, seed: int = 0, size: float = 7):
-    cfg = cv.cfg
-    for i in range(n):
-        sp = (0.5 + rnd(i * 5 + seed))
-        ph_ = (t * speed * sp / (cfg.height + 60) + rnd(i * 7 + seed)) % 1.0
-        y = -30 + ph_ * (cfg.height + 60)
-        x = rnd(i * 3 + seed) * cfg.width + 25 * math.sin(t * 1.3 * sp + i)
-        r = size * (0.5 + rnd(i + 3 + seed))
-        px, py = cv.pt(x, y)
-        rr = r * cv.sc
-        cv.d.ellipse([px - rr, py - rr, px + rr, py + rr], fill=mix(cv.bg, col, 0.95))
-
-
-def bubbles(cv: Canvas, t: float, x0: float, x1: float, y_from: float, y_to: float, n: int = 14,
-            col=(255, 255, 255), seed: int = 0, size: float = 18):
-    """Пузыри поднимаются от y_from к y_to в полосе x0..x1."""
-    for i in range(n):
-        sp = 0.12 + 0.12 * rnd(i + seed)
-        ph_ = (t * sp + rnd(i * 5 + seed)) % 1.0
-        y = y_from + (y_to - y_from) * ph_
-        x = x0 + (x1 - x0) * rnd(i * 3 + seed) + 10 * math.sin(t * 2 + i)
-        r = size * (0.4 + rnd(i + 8 + seed))
-        a = math.sin(math.pi * ph_)
-        ell(cv, x, y, r, fill=None, w=3, col=mix(cv.bg, col, a))
-        ell(cv, x - r * 0.3, y - r * 0.3, r * 0.18, fill=mix(cv.bg, col, a), w=0)
-
-
-def burst(cv: Canvas, t: float, a: float, cx: float, cy: float, r: float = 110, spikes: int = 12,
-          fill=(250, 205, 50), d: float = 0.55, col=INK, w: float = 5):
-    """Комикс-«бабах»: зубчатая звезда быстро растёт и гаснет."""
-    u = t - a
-    if u < 0 or u > d:
+def poly(cv: Canvas, pts: List[Tuple[float, float]], fill=None, w: float = 6, col=INK):
+    if cv.muted:
         return
-    k = 1 - (1 - min(1.0, u / (d * 0.45))) ** 3
-    fade = 1.0 if u < d * 0.6 else 1 - (u - d * 0.6) / (d * 0.4)
+    P = [cv.pt(x, y) for x, y in wob(list(pts) + [pts[0]])]
+    if fill:
+        cv.d.polygon(P, fill=fill)
+    if w:
+        cv.d.line(P, fill=col, width=max(1, int(w * cv.sc)), joint="curve")
+
+
+def ell(cv: Canvas, cx: float, cy: float, rx: float, ry: float = None,
+        fill=None, w: float = 6, col=INK, a0: float = 0, a1: float = 360):
+    ry = rx if ry is None else ry
+    zoom = cv.sc / cv.S if cv.S else 1.0
+    n = 40 if zoom <= 1.3 else int(min(160, 40 * zoom))
+    pts = [
+        (cx + rx * math.cos(math.radians(a0 + (a1 - a0) * i / n)),
+         cy + ry * math.sin(math.radians(a0 + (a1 - a0) * i / n)))
+        for i in range(n + 1)
+    ]
+    if a1 - a0 >= 360:
+        poly(cv, pts[:-1], fill, w, col)
+    else:
+        if fill:
+            poly(cv, pts, fill, 0)
+        if w:
+            line(cv, pts, w, col)
+
+
+def rrect(cv: Canvas, x0: float, y0: float, x1: float, y1: float, r: float,
+          fill=None, w: float = 6, col=INK):
+    r = max(0.5, min(r, (x1 - x0) / 2, (y1 - y0) / 2))
     pts = []
-    for i in range(spikes * 2):
-        rr = r * k * (1.0 if i % 2 == 0 else 0.62) * (0.9 + 0.2 * rnd(i + 3))
-        ang = math.pi * i / spikes + 0.2
-        pts.append((cx + rr * math.cos(ang), cy + rr * math.sin(ang)))
-    poly(cv, pts, mix(cv.bg, fill, fade), w, mix(cv.bg, col, fade))
+    for cx, cy, a in ((x1 - r, y0 + r, -90), (x1 - r, y1 - r, 0),
+                      (x0 + r, y1 - r, 90), (x0 + r, y0 + r, 180)):
+        for i in range(7):
+            ang = math.radians(a + 90 * i / 6)
+            pts.append((cx + r * math.cos(ang), cy + r * math.sin(ang)))
+    poly(cv, pts, fill, w, col)
 
 
-def puff(cv: Canvas, t: float, a: float, x: float, y: float, r: float = 40, d: float = 0.9,
-         col=(245, 245, 250), n: int = 5, rise: float = 40):
-    """Клубок дыма/пыли: несколько кругов расходятся и тают."""
-    u = t - a
-    if u < 0 or u > d:
+# ============================================================
+# Text
+# ============================================================
+
+def text(cv: Canvas, x: float, y: float, s: str, size: float,
+         col=INK, anchor: str = "mm", stroke: float = 0,
+         alpha: float = 1.0, scale: float = 1.0, rot: float = 0.0,
+         stroke_col=INK):
+    """
+    rot — поворот текста в градусах (по часовой). Поворот камеры/группы учитывается автоматически.
+    stroke_col — цвет обводки (по умолчанию INK, как раньше).
+    """
+    if cv.muted or alpha <= 0.02 or scale <= 0.02:
         return
-    k = u / d
-    for i in range(n):
-        ang = math.tau * i / n + 0.4
-        dist = r * 0.9 * E(k)
-        rr = r * (0.55 + 0.5 * k) * (0.8 + 0.4 * rnd(i + 4))
-        ell(cv, x + dist * math.cos(ang), y + dist * math.sin(ang) * 0.6 - rise * k, rr,
-            fill=mix(cv.bg, col, 1 - k), w=3, col=mix(cv.bg, INK, (1 - k) * 0.7))
+    font = get_font(int(size * cv.sc * scale))
+    fill = mix(cv.bg, col, min(1.0, alpha))
+    px, py = cv.pt(x, y)
+    sw = int(stroke * cv.sc)
+    total_rot = rot + cv.rot_deg
+    if abs(total_rot) < 0.05:
+        cv.d.text((px, py), s, font=font, fill=fill, anchor=anchor,
+                  stroke_width=sw, stroke_fill=stroke_col)
+        return
+    # повёрнутый текст: тугой слой по bbox текста, поворот, и якорь встаёт точно в (px, py)
+    probe = ImageDraw.Draw(Image.new("L", (1, 1)))
+    try:
+        bx0, by0, bx1, by1 = probe.multiline_textbbox((0, 0), s, font=font, anchor=anchor, stroke_width=sw) \
+            if "\n" in s else probe.textbbox((0, 0), s, font=font, anchor=anchor, stroke_width=sw)
+    except ValueError:
+        bx0, by0, bx1, by1 = probe.textbbox((0, 0), s, font=font, anchor="la", stroke_width=sw)
+        anchor = "la"
+    pad = 4 + sw
+    lw_, lh_ = int(bx1 - bx0) + 2 * pad, int(by1 - by0) + 2 * pad
+    ax, ay = pad - bx0, pad - by0                      # где в слое лежит точка привязки
+    tmp = Image.new("RGBA", (max(1, lw_), max(1, lh_)), (0, 0, 0, 0))
+    ImageDraw.Draw(tmp).text((ax, ay), s, font=font, fill=fill + (255,), anchor=anchor,
+                             stroke_width=sw, stroke_fill=stroke_col + (255,))
+    big = tmp.rotate(-total_rot, resample=Image.BICUBIC, expand=True)
+    th = math.radians(total_rot)
+    vx, vy = ax - tmp.width / 2, ay - tmp.height / 2
+    rx = vx * math.cos(th) - vy * math.sin(th)
+    ry = vx * math.sin(th) + vy * math.cos(th)
+    pos = (int(round(px - (big.width / 2 + rx))), int(round(py - (big.height / 2 + ry))))
+    if cv.im.mode == "RGBA":
+        cv.im.alpha_composite(big, (max(0, pos[0]), max(0, pos[1])))
+    else:
+        cv.im.paste(big.convert("RGB"), pos, big.getchannel("A"))
 
 
-def ripple(cv: Canvas, t: float, a: float, x: float, y: float, r: float = 120, n: int = 3, d: float = 1.1,
-           col=(90, 150, 240), w: float = 5, squash: float = 1.0):
-    """Расходящиеся круги (волны, сигнал, удар об воду)."""
-    for i in range(n):
-        u = (t - a - i * d * 0.25) / d
-        if 0 < u < 1:
-            k = 1 - (1 - u) ** 2
-            ell(cv, x, y, r * k, r * k * squash, w=w, col=mix(cv.bg, col, 1 - u))
+def twidth(s: str, size: float) -> float:
+    return get_font(int(size)).getlength(s)
 
 
-def speed_lines(cv: Canvas, t: float, cx: float, cy: float, r0: float = 160, r1: float = 700, n: int = 26,
-                col=INK, w: float = 4, seed: int = 0, fps: float = 18, alpha: float = 0.8):
-    """Манга-линии скорости из точки (фон «рывка», удара, озарения). Мерцают на fps кадрах/с."""
-    fr = math.floor(t * fps)
-    c = mix(cv.bg, col, alpha)
-    for i in range(n):
-        ang = math.tau * (i + rnd(fr * 3 + i + seed) * 0.8) / n
-        a0 = r0 * (1 + 0.4 * rnd(fr + i * 5 + seed))
-        a1 = r1 * (0.7 + 0.5 * rnd(fr * 7 + i + seed))
-        line(cv, [(cx + a0 * math.cos(ang), cy + a0 * math.sin(ang)),
-                  (cx + a1 * math.cos(ang), cy + a1 * math.sin(ang))], w * (0.6 + rnd(i + seed)), c)
+def fit(s: str, size: float, maxw: float = 520) -> float:
+    w = twidth(s, size)
+    return size if w <= maxw else size * maxw / w
 
 
-def emphasis(cv: Canvas, t: float, cx: float, cy: float, r: float = 70, n: int = 8, col=INK, w: float = 5,
-             length: float = 22, fps: float = 10, span: float = 220):
-    """Короткие лучики вокруг объекта («!», дрожь, удивление). span — угол дуги в градусах (360 = круг)."""
-    pulse_k = 0.5 + 0.5 * math.sin(t * math.tau * fps / 2)
-    for i in range(n):
-        ang = math.radians(-90 - span / 2 + span * i / max(1, n - 1))
-        r0, r1 = r + 8, r + 8 + length * (0.6 + 0.6 * pulse_k)
-        line(cv, [(cx + r0 * math.cos(ang), cy + r0 * math.sin(ang)),
-                  (cx + r1 * math.cos(ang), cy + r1 * math.sin(ang))], w, col)
+def fit_safe(cv: Canvas, s: str, size: float, x: float = None, min_k: float = 0.0) -> float:
+    """
+    fit() под safe-зону: текст, центрированный в x (по умолчанию cfg.center_x), строго не заходит за
+    safe_left/safe_right (для center_x=350 это максимум 520 px по ширине).
+    Если x далеко от центра, допустимая ширина мала и кегль сильно уменьшится — тогда сдвинь объект
+    или перенеси строку; min_k>0 задаёт нижний предел кегля (size*min_k), но safe-зону тогда не гарантирует.
+    """
+    x = cv.cfg.center_x if x is None else x
+    return max(fit(s, size, cv.cfg.safe_w(x)), size * min_k)
 
 
-def motion_trail(cv: Canvas, x0: float, y0: float, x1: float, y1: float, n: int = 3, col=INK, w: float = 4,
-                 gap: float = 14):
-    """Параллельные штрихи «за» движущимся объектом: от (x0,y0) к (x1,y1)."""
-    dx, dy = x1 - x0, y1 - y0
-    L = math.hypot(dx, dy) or 1
-    nx, ny = -dy / L, dx / L
-    for i in range(n):
-        o = (i - (n - 1) / 2) * gap
-        line(cv, [(x0 + nx * o, y0 + ny * o), (x1 + nx * o, y1 + ny * o)], w, col)
+def title(cv: Canvas, t: float, s: str, size: float = 54, y: float = 70,
+          col=INK, a: float = 0.1, ul=(235, 90, 70), cx: float = None):
+    if cx is None:
+        cx = cv.cfg.center_x
+    # карандаш на конце подчёркивания выступает вправо на ~36 px — учитываем его, чтобы всё осталось в safe-зоне
+    avail = min(cv.cfg.safe_w(cx), 2 * (cv.cfg.safe_right - cx - 36)) / 1.02
+    size = fit(s, size, max(avail, 40))
+    text(cv, cx, y, s, size, col, scale=pop(t, a), stroke=(2 if col[0] > 200 else 0))
+    u = ph(t, a + 0.3, a + 1.0)
+    if u > 0:
+        w = twidth(s, size) * 1.02
+        x0 = cx - w / 2
+        yy = y + size * 0.62
+        xe = x0 + w * u
+        line(cv, [(x0, yy), (x0 + (xe - x0) * 0.5, yy + 2), (xe, yy)], 5, ul)
+        line(cv, [(xe + 4, yy - 3), (xe + 34, yy - 25)], 10, (250, 200, 40))
+        poly(cv, [(xe - 2, yy + 2), (xe + 6, yy - 8), (xe + 12, yy - 2)], INK, 0)
+
+
+def big(cv: Canvas, t: float, a: float, s: str, y: float, size: float = 64,
+        col=INK, out: float = None, stroke: float = 0, x: float = None):
+    if x is None:
+        x = cv.cfg.center_x
+    al = 1.0 if out is None else 1 - fa(t, out, 0.25)
+    text(cv, x, y, s, fit_safe(cv, s, size, x), col, scale=pop(t, a), alpha=al, stroke=stroke)
+
+
+# ============================================================
+# Improved Face + Person
+# ============================================================
+
+def face(cv: Canvas, cx: float, cy: float, hr: float, s: float = 1.0, mood: str = "smile"):
+    """
+    Более стабильное и живое лицо.
+    hr — радиус головы, s — общий scale персонажа.
+    """
+    # голова
+    ell(cv, cx, cy, hr, hr, WHITE, max(4.5, 5.5 * s))
+
+    # глаза
+    eye_y = cy - hr * 0.12
+    eye_dx = hr * 0.38
+    eye_r = hr * 0.13
+
+    if mood in ("sleep",):
+        # закрытые глаза — дуги
+        for sgn in (-1, 1):
+            ex = cx + sgn * eye_dx
+            line(cv, [
+                (ex - eye_r * 1.1, eye_y),
+                (ex, eye_y + eye_r * 0.6),
+                (ex + eye_r * 1.1, eye_y)
+            ], max(3.0, 3.8 * s))
+    elif mood == "tired":
+        for sgn in (-1, 1):
+            ex = cx + sgn * eye_dx
+            ell(cv, ex, eye_y, eye_r * 0.85, fill=INK, w=0)
+            # мешки
+            line(cv, [
+                (ex - eye_r * 1.2, eye_y + eye_r * 1.3),
+                (ex, eye_y + eye_r * 1.7),
+                (ex + eye_r * 1.2, eye_y + eye_r * 1.3)
+            ], max(2.5, 3.0 * s), (140, 120, 170))
+    else:
+        # обычные глаза (точки)
+        for sgn in (-1, 1):
+            ex = cx + sgn * eye_dx
+            r = eye_r * (1.35 if mood == "shock" else 1.0)
+            ell(cv, ex, eye_y, r, fill=INK, w=0)
+
+    # брови / выражение
+    brow_y = eye_y - hr * 0.28
+    if mood == "angry":
+        for sgn in (-1, 1):
+            ex = cx + sgn * eye_dx
+            line(cv, [
+                (ex - eye_r * 1.3, brow_y - 2 * sgn),
+                (ex + eye_r * 1.1, brow_y + 4 * sgn)
+            ], max(3.2, 4.0 * s))
+    elif mood == "sad":
+        for sgn in (-1, 1):
+            ex = cx + sgn * eye_dx
+            line(cv, [
+                (ex - eye_r * 1.2, brow_y + 3),
+                (ex + eye_r * 1.1, brow_y - 2)
+            ], max(3.0, 3.6 * s))
+
+    # рот
+    mouth_y = cy + hr * 0.32
+    mw = hr * 0.42
+
+    if mood == "smile":
+        line(cv, [
+            (cx - mw, mouth_y),
+            (cx, mouth_y + hr * 0.22),
+            (cx + mw, mouth_y)
+        ], max(3.5, 4.2 * s))
+    elif mood == "laugh":
+        # открытый рот
+        ell(cv, cx, mouth_y + hr * 0.06, hr * 0.28, hr * 0.22, (200, 90, 100), max(3.0, 3.5 * s))
+        # прищуренные глаза сверху уже нарисованы как точки — добавим дуги
+        for sgn in (-1, 1):
+            ex = cx + sgn * eye_dx
+            line(cv, [
+                (ex - eye_r * 1.0, eye_y + 2),
+                (ex, eye_y - eye_r * 0.7),
+                (ex + eye_r * 1.0, eye_y + 2)
+            ], max(2.8, 3.2 * s))
+    elif mood == "shock":
+        ell(cv, cx, mouth_y + 2, hr * 0.16, hr * 0.22, None, max(3.0, 3.5 * s))
+    elif mood == "sad":
+        line(cv, [
+            (cx - mw * 0.9, mouth_y + hr * 0.12),
+            (cx - mw * 0.25, mouth_y),
+            (cx + mw * 0.25, mouth_y + hr * 0.12),
+            (cx + mw * 0.9, mouth_y)
+        ], max(3.2, 3.8 * s))
+    elif mood == "angry":
+        line(cv, [
+            (cx - mw * 0.85, mouth_y + hr * 0.08),
+            (cx, mouth_y - hr * 0.06),
+            (cx + mw * 0.85, mouth_y + hr * 0.08)
+        ], max(3.2, 3.8 * s))
+    elif mood in ("flat", "tired", "sleep"):
+        line(cv, [
+            (cx - mw * 0.7, mouth_y),
+            (cx + mw * 0.7, mouth_y)
+        ], max(3.0, 3.5 * s))
+
+
+def person(cv: Canvas, x: float, y: float, s: float = 1.0,
+           shirt=(255, 255, 255), mood: str = "smile",
+           L=(-40, 55), R=(40, 55), walk: float = None, hair=None):
+    """
+    Более стабильный стикмен.
+    y — уровень ног (низ персонажа).
+    """
+    # пропорции
+    leg = 95 * s
+    tor = 88 * s
+    hr = 42 * s
+
+    hy = y - leg                    # таз
+    sy = y - leg - tor              # плечи
+    cx = x
+    cy = sy - hr * 1.15             # центр головы
+
+    # ноги
+    for sgn in (-1, 1):
+        if walk is not None:
+            a = math.sin(walk + (0 if sgn < 0 else math.pi)) * 0.45
+        else:
+            a = sgn * 0.10
+        fx = x + sgn * 11 * s + math.sin(a) * leg * 0.95
+        fy = hy + math.cos(a) * leg * 0.97
+        line(cv, [(x + sgn * 10 * s, hy), (fx, fy), (fx + 12 * s, fy)], max(5.0, 5.8 * s))
+
+    # руки
+    hands = []
+    for sgn, (dx, dy) in ((-1, L), (1, R)):
+        sx = x + sgn * 24 * s
+        sy2 = sy + 8 * s
+        hx = sx + dx * s
+        hy2 = sy2 + dy * s
+        mx = (sx + hx) / 2 + sgn * 5 * s
+        my = (sy2 + hy2) / 2 + 6 * s
+        line(cv, [(sx, sy2), (mx, my), (hx, hy2)], max(5.0, 5.8 * s))
+        hands.append((hx, hy2))
+
+    # тело (скруглённый прямоугольник)
+    rrect(cv, x - 26 * s, sy, x + 26 * s, hy + 4 * s, 20 * s, shirt, max(5.0, 5.5 * s))
+
+    # волосы (простые штрихи)
+    if hair:
+        for k in range(-2, 3):
+            line(cv, [
+                (cx + k * 8 * s, cy - hr + 1 * s),
+                (cx + k * 11 * s, cy - hr - 12 * s)
+            ], max(4.0, 4.5 * s), hair)
+
+    face(cv, cx, cy, hr, s, mood)
+    return cx, cy, hands[0], hands[1]
+
+
+# ============================================================
+# Objects
+# ============================================================
+
+BRAIN_PARTS = [(-110, 0, 85), (-40, -55, 95), (60, -50, 95), (120, 10, 80),
+               (-60, 50, 85), (40, 60, 90), (-130, 45, 60), (125, 60, 60)]
+
+def brain(cv: Canvas, cx: float, cy: float, k: float = 1.0, sc: float = 1.0):
+    for dx, dy, r in BRAIN_PARTS:
+        ell(cv, cx + dx * k * sc, cy + dy * k * sc, (r + 4) * k * sc, fill=INK, w=0)
+    for dx, dy, r in BRAIN_PARTS:
+        ell(cv, cx + dx * k * sc, cy + dy * k * sc, (r - 4) * k * sc, fill=(248, 176, 190), w=0)
+    for pts in ([(-90, -20), (-60, -45), (-30, -15)],
+               [(20, -70), (50, -40), (80, -75)],
+               [(-30, 40), (0, 20), (40, 45), (70, 25)],
+               [(80, 10), (110, 30)]):
+        line(cv, [(cx + a * k * sc, cy + b * k * sc) for a, b in pts], 4 * sc, (210, 120, 140))
+
+
+def arrow(cv: Canvas, x0: float, y0: float, x1: float, y1: float,
+          w: float = 6, col=INK, k: float = 1.0):
+    xe = x0 + (x1 - x0) * k
+    ye = y0 + (y1 - y0) * k
+    line(cv, [(x0, y0), (xe, ye)], w, col)
+    if k > 0.85:
+        a = math.atan2(y1 - y0, x1 - x0)
+        for da in (2.6, -2.6):
+            line(cv, [(xe, ye), (xe + math.cos(a + da) * 20, ye + math.sin(a + da) * 20)], w, col)
+
+
+def zzz(cv: Canvas, x: float, y: float, t: float, col=WHITE, size: float = 34):
+    for k in range(3):
+        f = (t * 0.4 + k / 3) % 1
+        text(cv, x + f * 60 + k * 6, y - f * 120, "Z",
+             size * (0.6 + f * 0.8), col, alpha=math.sin(math.pi * f))
+
+
+def clock(cv: Canvas, x: float, y: float, r: float, hh: float, mm: float, k: float = 1.0):
+    ell(cv, x, y, r * k, fill=WHITE, w=6)
+    for i in range(12):
+        a = math.radians(i * 30 - 90)
+        line(cv, [(x + math.cos(a) * r * 0.82 * k, y + math.sin(a) * r * 0.82 * k),
+                  (x + math.cos(a) * r * 0.92 * k, y + math.sin(a) * r * 0.92 * k)], 4)
+    for ang, ln, ww in ((hh, 0.5, 7), (mm, 0.78, 5)):
+        a = math.radians(ang - 90)
+        line(cv, [(x, y), (x + math.cos(a) * r * ln * k, y + math.sin(a) * r * ln * k)], ww)
+
+
+def meter(cv: Canvas, t: float, y: float, lv: float, col, label: str, a: float,
+          x0: float = None, x1: float = None, cx: float = None):
+    if cx is None:
+        cx = cv.cfg.center_x
+    if x0 is None or x1 is None:           # по умолчанию шкала симметрична относительно cx (400 px)
+        half = min(200.0, cv.cfg.safe_half(cx))
+        x0, x1 = cx - half, cx + half
+    text(cv, cx, y - 60, label, 36, alpha=fa(t, a))
+    if fa(t, a, 0.3) <= 0.02:
+        return
+    rrect(cv, x0, y - 20, x1, y + 20, 12, (245, 245, 240), 5)
+    if lv > 0.02:
+        rrect(cv, x0 + 3, y - 17, x0 + 3 + (x1 - x0 - 6) * lv, y + 17, 9, col, 0)
+    rrect(cv, x0, y - 20, x1, y + 20, 12, None, 5)
+    text(cv, cx, y + 2, f"{int(lv * 100)}%", 28)
+
+
+def watermark(cv: Canvas, name: str = "uTeam", y: float = 62, size: float = 28, col=(150, 150, 160)):
+    text(cv, cv.cfg.center_x, y, name, size, col)
