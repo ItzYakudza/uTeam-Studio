@@ -37,6 +37,8 @@ D.init_db()
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Register existing production folders before the UI/API starts serving data.
+    D.import_storage_episodes()
     stats_task = asyncio.create_task(SS.background_sync_loop(), name="background_sync_loop")
     try:
         yield
@@ -163,6 +165,11 @@ def doctor():
 def migrate():
     stats = D.migrate_from_legacy()
     return {"ok": True, **stats}
+
+@app.post("/api/storage/import")
+def import_storage():
+    """Manually rescan storage/ and register any new episode folders."""
+    return {"ok": True, **D.import_storage_episodes()}
 
 
 # ---- channels ----
