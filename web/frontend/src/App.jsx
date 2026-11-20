@@ -23,6 +23,18 @@ const STATUS_LABEL = {
   error: 'Ошибка',
 }
 
+function formatDuration(value) {
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds) || seconds < 0) return '--:--'
+  const total = Math.floor(seconds)
+  const s = String(total % 60).padStart(2, '0')
+  const m = Math.floor(total / 60)
+  if (m >= 60) {
+    return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}:${s}`
+  }
+  return `${String(m).padStart(2, '0')}:${s}`
+}
+
 function Modal({ title, children, onClose, footer }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -882,7 +894,7 @@ export default function App()
                           {STATUS_LABEL[ep.status] || ep.status}
                         </span>
                         {!(ep.has_preview || ep.has_thumb) && <span>{ep.kind === 'shorts' ? 'Shorts' : 'Video'}</span>}
-                        {ep.has_video && <span className="thumb-badge">MP4</span>}
+                        {ep.has_video && <span className="thumb-badge">{formatDuration(ep.duration_sec)}</span>}
                       </div>
                       <div className="video-body">
                         <div className="video-title">{ep.title}</div>
