@@ -12,7 +12,9 @@ Layout:
 from __future__ import annotations
 
 import json
+import re
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -217,6 +219,35 @@ def local_preview_path(ep_path: Path) -> Optional[Path]:
     return None
 
 
+def local_video_duration(ep_path: Path) -> Optional[float]:
+    """Read duration from a locally rendered final MP4 when YouTube metadata is absent."""
+    build = Path(ep_path) / "build"
+    videos = sorted(build.glob("final_*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True) if build.exists() else []
+    if not videos:
+        return None
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        try:
+            import imageio_ffmpeg
+            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            return None
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-i", str(videos[0])],
+            capture_output=True, text=True, timeout=12
+        )
+        output = (result.stderr or "") + "\\n" + (result.stdout or "")
+        match = re.search(r"Duration:\\s*(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)", output)
+        if not match:
+            return None
+        hours, minutes, seconds = match.groups()
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    except Exception:
+        return None
+
+
 def display_meta(ep_path: Path) -> dict:
     """
     What UI should show for a card/detail.
@@ -282,7 +313,7 @@ def display_meta(ep_path: Path) -> dict:
         "youtube_url": meta.get("url") or latest.get("url"),
         "privacy": meta.get("privacy"),
         "published_at": meta.get("published_at"),
-        "duration_sec": meta.get("duration_sec") or latest.get("duration_sec"),
+        "duration_sec": meta.get("duration_sec") or latest.get("duration_sec") or local_video_duration(ep_path),
         "preview_path": str(preview) if preview else None,
         "has_preview": preview is not None,
         "views": latest.get("views"),
