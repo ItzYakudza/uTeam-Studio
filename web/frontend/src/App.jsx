@@ -309,15 +309,6 @@ export default function App()
     }
   }
 
-  // Content tab: refresh list at most once per minute (not every few seconds)
-  useEffect(() => {
-    if (page !== 'content' && page !== 'episode') return
-    const t = setInterval(() => {
-      loadEpisodes()
-    }, 60 * 1000)
-    return () => clearInterval(t)
-  }, [page, loadEpisodes])
-
   // Renders tab: jobs a bit more often
   useEffect(() => {
     if (page !== 'renders') return
