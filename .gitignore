@@ -47,7 +47,8 @@ npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
 
-# Generated episode assets (keep scripts, scenes and metadata)
+# Generated episode assets and local sync state (keep scripts, scenes and metadata)
+YouTube/storage/.stats_sync_state.json
 YouTube/storage/**/source/
 YouTube/storage/**/voiceover.mp3
 YouTube/storage/**/build/*.mp4
