@@ -1034,3 +1034,113 @@ def update_channel(channel_id: int, **fields) -> dict:
     conn.commit()
     conn.close()
     return get_channel(channel_id)
+
+
+# ---- import episodes already present in storage/ ----
+
+def import_storage_episodes() -> dict:
+    """
+    Register production folders from storage/ in SQLite.
+    Safe to run repeatedly: (channel_id, folder) is unique and existing rows
+    are never duplicated or overwritten.
+    """
+    import ast
+
+    stats = {"imported": 0, "skipped": 0, "channels": 0, "errors": []}
+    for ch in list_channels():
+        for kind_dir, kind in (("shorts", "shorts"), ("longs", "long")):
+            base = STORAGE / ch["slug"] / kind_dir
+            if not base.is_dir():
+                continue
+            for folder_path in sorted(base.iterdir()):
+                if not folder_path.is_dir():
+                    continue
+                scenes_path = folder_path / "scenes.py"
+                script_path = folder_path / "script.txt"
+                if not scenes_path.is_file() and not script_path.is_file():
+                    continue
+
+                conn = connect()
+                exists = conn.execute(
+                    "SELECT id FROM episodes WHERE channel_id=? AND folder=?",
+                    (ch["id"], folder_path.name),
+                ).fetchone()
+                conn.close()
+                if exists:
+                    stats["skipped"] += 1
+                    continue
+
+                title = ""
+                description = ""
+                tags = ""
+                if scenes_path.is_file():
+                    try:
+                        tree = ast.parse(scenes_path.read_text(encoding="utf-8"))
+                        meta_node = next(
+                            (n.value for n in tree.body
+                             if isinstance(n, ast.Assign)
+                             and any(isinstance(t, ast.Name) and t.id == "META" for t in n.targets)),
+                            None,
+                        )
+                        if meta_node is not None:
+                            meta = ast.literal_eval(meta_node)
+                            if isinstance(meta, dict):
+                                title = str(meta.get("title") or "")
+                                description = str(meta.get("description") or "")
+                                tags_value = meta.get("tags") or ""
+                                tags = ", ".join(tags_value) if isinstance(tags_value, (list, tuple)) else str(tags_value)
+                        if not title:
+                            title_node = next(
+                                (n.value for n in tree.body
+                                 if isinstance(n, ast.Assign)
+                                 and any(isinstance(t, ast.Name) and t.id == "TITLE" for t in n.targets)),
+                                None,
+                            )
+                            if title_node is not None:
+                                try:
+                                    title = str(ast.literal_eval(title_node))
+                                except Exception:
+                                    pass
+                    except Exception as exc:
+                        stats["errors"].append(f"{folder_path.name}: {exc}")
+
+                if not title and titlelib:
+                    try:
+                        title = titlelib.resolve_title(folder_path, folder_path.name)
+                    except Exception:
+                        pass
+                if not title:
+                    title = re.sub(r"^\\d+_", "", folder_path.name)
+                    title = re.sub(r"_\\d{4}-\\d{2}-\\d{2}_\\d{4}$", "", title)
+                    title = title.replace("_", " ").strip().title()
+
+                now = _now()
+                conn = connect()
+                try:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO episodes(
+                            channel_id, title, kind, status, description, tags, folder,
+                            has_script, has_scenes, created_at, updated_at
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            ch["id"], title, kind, "scripted", description, tags,
+                            folder_path.name, int(script_path.is_file()),
+                            int(scenes_path.is_file()), now, now,
+                        ),
+                    )
+                    conn.commit()
+                    inserted = conn.execute(
+                        "SELECT id FROM episodes WHERE channel_id=? AND folder=?",
+                        (ch["id"], folder_path.name),
+                    ).fetchone()
+                    if inserted:
+                        stats["imported"] += 1
+                        try:
+                            _refresh_flags(inserted["id"])
+                        except Exception as exc:
+                            stats["errors"].append(f"{folder_path.name}: refresh: {exc}")
+                finally:
+                    conn.close()
+    return stats
