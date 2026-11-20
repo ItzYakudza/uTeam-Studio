@@ -67,6 +67,36 @@ function stageFromLogs(logs = []) {
   return { current, done }
 }
 
+function parseStages(job = {}) {
+  const logs = Array.isArray(job.log) ? job.log : []
+  const parsed = stageFromLogs(logs)
+  const aliases = {
+    prepare: 'prepare',
+    voice: 'audio',
+    validate: 'scenes',
+    audio: 'compose',
+    mix: 'compose',
+    encode: 'encode',
+    thumb: 'done',
+    done: 'done',
+  }
+  const current = aliases[parsed.current] || (job.status === 'done' ? 'done' : 'prepare')
+  const done = (parsed.done || []).map((stage) => aliases[stage] || stage)
+  if (job.status === 'done') done.push('done')
+  return { current, done: [...new Set(done)] }
+}
+
+function jobProgress(job = {}) {
+  if (job.status === 'done') return 100
+  if (job.status === 'error' || job.status === 'cancelled' || job.status === 'queued') return 0
+  const explicit = Number(job.progress)
+  if (Number.isFinite(explicit) && explicit > 0) return Math.max(0, Math.min(99, explicit))
+  const stages = parseStages(job)
+  const order = ['prepare', 'audio', 'scenes', 'compose', 'encode', 'done']
+  const index = Math.max(0, order.indexOf(stages.current))
+  return Math.min(95, Math.round((index / (order.length - 1)) * 100))
+}
+
 function RenderTheater({ job, episodeTitle, mode, onMode, onClose, onCancel }) {
   if (!job) return null
   const progress = jobProgress(job)
@@ -168,9 +198,7 @@ function RenderTheater({ job, episodeTitle, mode, onMode, onClose, onCancel }) {
                 <button className="btn btn-ghost" onClick={() => onMode && onMode('mini')}>Свернуть</button>
               </>
             )}
-            {(isDone || isErr) && (
-              <button className="btn btn-primary" onClick={onClose}>{isDone ? 'Готово' : 'Закрыть'}</button>
-            )}
+            <button className="btn btn-primary" onClick={onClose}>{isDone ? 'Готово' : isErr ? 'Закрыть' : 'Скрыть окно'}</button>
           </div>
         </div>
       </div>
@@ -737,7 +765,7 @@ export default function App()
         ))}
 
         <div style={{ marginTop: 'auto', padding: '16px 8px 0', display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <button className="btn btn-primary" onClick={() => setShowNewEpisode(true)}>
+          <button className="btn btn-primary" onClick={() => { setNewEpChannel(channels[0]?.id ?? null); setShowNewEpisode(true) }}>
             + Новое видео
           </button>
           <button className="btn btn-ghost btn-sm" onClick={() => setShowNewChannel(true)}>
@@ -1524,7 +1552,78 @@ export default function App()
             </>
           )}
 
-{showTheater && activeJobId && (
+{showNewChannel && (
+        <Modal
+          title="Новый канал"
+          onClose={() => setShowNewChannel(false)}
+          footer={
+            <>
+              <button className="btn btn-ghost" onClick={() => setShowNewChannel(false)}>Отмена</button>
+              <button className="btn btn-primary" onClick={createChannel} disabled={!newChannelName.trim()}>Создать канал</button>
+            </>
+          }
+        >
+          <div className="field">
+            <label>Название канала</label>
+            <input
+              autoFocus
+              value={newChannelName}
+              onChange={(e) => setNewChannelName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') createChannel() }}
+              placeholder="Например, uTeam-Studio"
+            />
+          </div>
+        </Modal>
+      )}
+
+      {showNewEpisode && (
+        <Modal
+          title="Новое видео"
+          onClose={() => setShowNewEpisode(false)}
+          footer={
+            <>
+              <button className="btn btn-ghost" onClick={() => setShowNewEpisode(false)}>Отмена</button>
+              <button className="btn btn-primary" onClick={createEpisode} disabled={!newEpTitle.trim() || !newEpChannel}>Создать видео</button>
+            </>
+          }
+        >
+          <div className="field">
+            <label>Название видео</label>
+            <input
+              autoFocus
+              value={newEpTitle}
+              onChange={(e) => setNewEpTitle(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') createEpisode() }}
+              placeholder="Тема или название ролика"
+            />
+          </div>
+          <div className="field">
+            <label>Канал</label>
+            <select
+              value={newEpChannel ?? ''}
+              onChange={(e) => setNewEpChannel(e.target.value ? Number(e.target.value) : null)}
+              disabled={!channels.length}
+            >
+              <option value="">Выбери канал</option>
+              {channels.map((channel) => (
+                <option key={channel.id} value={channel.id}>{channel.name}</option>
+              ))}
+            </select>
+            {!channels.length && (
+              <div className="hint">Сначала создай канал.</div>
+            )}
+          </div>
+          <div className="field">
+            <label>Формат</label>
+            <select value={newEpKind} onChange={(e) => setNewEpKind(e.target.value)}>
+              <option value="shorts">YouTube Shorts</option>
+              <option value="long">Длинное видео</option>
+            </select>
+          </div>
+        </Modal>
+      )}
+
+      {showTheater && activeJobId && (
         <RenderTheater
           job={jobs.find((j) => Number(j.id) === Number(activeJobId)) || { id: activeJobId, status: 'running', log: [], preview: !!preview }}
           episodeTitle={renderTitle}
