@@ -13,7 +13,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -508,6 +508,23 @@ def active_jobs():
         out.append(row)
     return out
 
+
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: int):
+    j = D.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Job not found")
+    if j.get("status") in ("queued", "running"):
+        raise HTTPException(400, "Сначала отмени активный рендер")
+    D.delete_job(job_id)
+    return {"ok": True}
+
+
+@app.post("/api/jobs/clear-history")
+def clear_job_history(only_finished: bool = True):
+    return D.clear_job_history(only_finished=only_finished)
+
+
 @app.get("/api/jobs/{job_id}")
 def job(job_id: int):
     j = D.get_job(job_id)
@@ -767,20 +784,60 @@ def set_aggregate(ep_id: int, body: AggregateIn):
 
 
 @app.get("/api/episodes/{ep_id}/analytics")
-def episode_analytics(ep_id: int):
+def episode_analytics(ep_id: int, refresh_studio: bool = True):
     ep = D.get_episode(ep_id)
     if not ep:
         raise HTTPException(404, "Эпизод не найден")
-    disp = YD.display_meta(Path(ep["disk_path"]))
-    hist = YD.load_stats_history(Path(ep["disk_path"]))
-    status = YD.read_json(YD.yt_dir(Path(ep["disk_path"])) / "status.json") or {}
-    meta = YD.read_json(YD.yt_dir(Path(ep["disk_path"])) / "meta.json") or {}
+    ep_path = Path(ep["disk_path"])
+    disp = YD.display_meta(ep_path)
+    hist = YD.load_stats_history(ep_path)
+    status = YD.read_json(YD.yt_dir(ep_path) / "status.json") or {}
+    meta = YD.read_json(YD.yt_dir(ep_path) / "meta.json") or {}
+
+    studio = None
+    # Live-pull Studio metrics (avg view duration / retention) when OAuth is on
+    vid = ep.get("youtube_id") or meta.get("video_id")
+    latest = hist[-1] if hist else {}
+    needs_studio = (
+        latest.get("avg_view_duration_sec") is None
+        and latest.get("average_view_percentage") is None
+    )
+    if refresh_studio and vid and OYT.status().get("connected") and needs_studio:
+        try:
+            # Full sync writes stats.jsonl + latest.json including studio fields
+            ref = vid or ep.get("youtube_url")
+            result = YD.sync_episode_folder(ep_path, ref)
+            hist = YD.load_stats_history(ep_path)
+            meta = YD.read_json(YD.yt_dir(ep_path) / "meta.json") or {}
+            status = YD.read_json(YD.yt_dir(ep_path) / "status.json") or {}
+            studio = (result.get("stats") or {}).get("studio") or {
+                "studio_error": (result.get("stats") or {}).get("studio_error")
+            }
+            if result.get("stats"):
+                s = result["stats"]
+                D.upsert_video_stats(
+                    ep_id,
+                    s.get("date") or YT.today(),
+                    views=s.get("views") or 0,
+                    likes=s.get("likes") or 0,
+                    comments=s.get("comments") or 0,
+                    shares=s.get("shares") or 0,
+                    source=s.get("source") or "youtube",
+                    note="episode-analytics-refresh",
+                )
+        except Exception as e:
+            studio = {"error": str(e)[:300]}
+    elif vid and OYT.status().get("connected"):
+        # still expose last known studio block from latest snap
+        studio = latest.get("studio")
+
     return {
         "episode": ep,
         "display": disp,
         "meta": meta,
         "status": status,
         "history": hist,
+        "studio": studio,
         "include_in_aggregate": bool(ep.get("include_in_aggregate", 1)),
     }
 
@@ -887,6 +944,25 @@ def oauth_disconnect():
     return {"ok": True}
 
 
+@app.post("/api/youtube/dedupe")
+def youtube_dedupe(delete_folders: bool = True):
+    """Remove duplicate episodes that share the same youtube_id (keep oldest)."""
+    return D.dedupe_youtube_episodes(delete_folders=delete_folders)
+
+
+@app.post("/api/oauth/youtube/import-channel")
+def oauth_import_channel(max_videos: int = 100):
+    """Import all uploads from OAuth channel into local storage (create folders + youtube_data)."""
+    try:
+        if not OYT.status().get("connected"):
+            raise HTTPException(400, "YouTube OAuth не подключён")
+        return W.import_from_oauth(max_videos=max_videos)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
 @app.post("/api/oauth/youtube/refresh-channel")
 def oauth_refresh_channel():
     try:
@@ -900,7 +976,7 @@ def oauth_refresh_channel():
 
 
 @app.get("/api/oauth/youtube/video/{video_id}/studio")
-def oauth_video_studio(video_id: str, days: int = 90):
+def oauth_video_studio(video_id: str, days: int = 28):
     try:
         return OYT.video_studio_stats(video_id, days=days)
     except Exception as e:
@@ -927,7 +1003,30 @@ class StatsIn(BaseModel):
 
 
 @app.get("/api/analytics/summary")
-def analytics_summary(channel_id: Optional[int] = None):
+def analytics_summary(channel_id: Optional[int] = None, background_tasks: BackgroundTasks = None):
+    # If OAuth is live and last worker run is older than ~12 min, kick a background sync
+    # so the UI never needs a manual refresh button.
+    try:
+        st = W.get_state()
+        oauth_on = OYT.status().get("connected")
+        last = st.get("last_run")
+        stale = True
+        if last:
+            from datetime import datetime, timezone
+            try:
+                # last_run is local iso from db._now()
+                ts = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    age = (datetime.now() - ts).total_seconds()
+                else:
+                    age = (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds()
+                stale = age > 12 * 60
+            except Exception:
+                stale = True
+        if oauth_on and stale and background_tasks is not None:
+            background_tasks.add_task(W.sync_all)
+    except Exception:
+        pass
     base = D.analytics_summary(channel_id=channel_id)
     # enrich with per-episode latest from youtube_data, respect include_in_aggregate
     eps = D.list_episodes(channel_id=channel_id)
@@ -968,6 +1067,439 @@ def analytics_summary(channel_id: Optional[int] = None):
     base["excluded_count"] = len(excluded)
     base["active_count"] = len(active)
     return base
+
+
+
+@app.get("/api/analytics/dashboard")
+def analytics_dashboard(channel_id: Optional[int] = None):
+    """
+    Dashboard payload for Overview + structured AI analyst prompt.
+    Prompt excludes history arrays, reporting/studio errors, unpublished drafts.
+    """
+    from collections import defaultdict
+    from datetime import datetime, timezone
+
+    base = analytics_summary(channel_id=channel_id)
+    eps = D.list_episodes(channel_id=channel_id)
+    videos = []
+    stayed_vals = []
+    total_watch_h = 0.0
+    day_views = defaultdict(int)
+    releases = []
+    scheduled = []  # not yet on YouTube
+
+    def _first_sentences(text: str, n: int = 2) -> str:
+        if not text:
+            return ""
+        text = " ".join(str(text).split())
+        parts = []
+        buf = ""
+        for ch in text:
+            buf += ch
+            if ch in ".!?…" and len(buf.strip()) > 12:
+                parts.append(buf.strip())
+                buf = ""
+                if len(parts) >= n:
+                    break
+        if not parts and text:
+            parts = [text[:220] + ("…" if len(text) > 220 else "")]
+        return " ".join(parts[:n])
+
+    def _norm_date(s) -> Optional[str]:
+        if not s:
+            return None
+        s = str(s).strip()
+        if len(s) >= 8 and s[:8].isdigit() and "-" not in s[:10]:
+            return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+        return s[:10] if len(s) >= 10 else s
+
+    for ep in eps:
+        ep_path = Path(ep["disk_path"])
+        hist = YD.load_stats_history(ep_path)
+        latest = hist[-1] if hist else {}
+        meta = YD.read_json(YD.yt_dir(ep_path) / "meta.json") or {}
+        status = YD.read_json(YD.yt_dir(ep_path) / "status.json") or {}
+        disp = YD.display_meta(ep_path)
+
+        published = meta.get("published_at") or meta.get("upload_date")
+        yt_id = ep.get("youtube_id") or meta.get("video_id")
+        available = status.get("available")
+        if available is None:
+            available = bool(yt_id) and status.get("available") is not False
+        # unpublished / draft: no youtube id or explicitly unavailable
+        on_youtube = bool(yt_id) and available is not False
+
+        stayed = latest.get("stayed_pct")
+        avg_pct = latest.get("average_view_percentage")
+        avg_dur = latest.get("avg_view_duration_sec")
+        views = int(latest.get("views") or 0)
+        likes = int(latest.get("likes") or 0)
+        comments = int(latest.get("comments") or 0)
+        engaged = latest.get("engaged_views")
+        minutes = latest.get("estimated_minutes_watched")
+        if minutes:
+            try:
+                total_watch_h += float(minutes) / 60.0
+            except Exception:
+                pass
+
+        for h in hist:
+            d = (h.get("date") or (h.get("ts") or "")[:10] or "")[:10]
+            if d and h.get("views") is not None:
+                day_views[d] = max(day_views[d], int(h.get("views") or 0))
+
+        if published and on_youtube:
+            releases.append({
+                "episode_id": ep["id"],
+                "title": ep.get("title") or meta.get("title"),
+                "kind": ep.get("kind"),
+                "published_at": published,
+            })
+
+        prev_views = int(hist[-2]["views"]) if len(hist) >= 2 and hist[-2].get("views") is not None else None
+        delta = (views - prev_views) if prev_views is not None else None
+
+        # engagement only meaningful with enough sample
+        eng_rate = None
+        eng_rate_note = None
+        if views >= 50:
+            eng_rate = round(((likes + comments) / views) * 100.0, 2)
+        else:
+            eng_rate_note = "N/A (low sample)"
+
+        # hours since publish (API lag / just-published guard)
+        hours_since_publish = None
+        pub_raw = published
+        if pub_raw:
+            try:
+                from datetime import datetime, timezone
+                s = str(pub_raw).replace("Z", "+00:00")
+                if len(s) >= 8 and s[:8].isdigit() and "-" not in s[:10]:
+                    s = f"{s[0:4]}-{s[4:6]}-{s[6:8]}T00:00:00+00:00"
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                hours_since_publish = max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds() / 3600.0)
+            except Exception:
+                hours_since_publish = None
+
+        # stayed_pct fallback: walk history newest→oldest for last non-null
+        stayed_source = "analytics_api"
+        if stayed is None:
+            for h in reversed(hist):
+                if h.get("stayed_pct") is not None:
+                    try:
+                        stayed = float(h.get("stayed_pct"))
+                        stayed_source = "local_history"
+                        break
+                    except Exception:
+                        pass
+        if stayed is None and latest.get("stayed_pct_manual") is not None:
+            try:
+                stayed = float(latest.get("stayed_pct_manual"))
+                stayed_source = "manual"
+            except Exception:
+                pass
+        # also check meta / latest saved studio block
+        if stayed is None:
+            for src in (latest.get("studio") or {}, meta):
+                if not isinstance(src, dict):
+                    continue
+                for k in ("stayed_pct", "stayed_to_watch_pct"):
+                    if src.get(k) is not None:
+                        try:
+                            stayed = float(src.get(k))
+                            stayed_source = "saved_meta"
+                            break
+                        except Exception:
+                            pass
+                if stayed is not None:
+                    break
+
+        stayed_note = None
+        if stayed is None:
+            stayed_source = "pending"
+            # rough estimate hint for Shorts when we only have public views
+            if views >= 30 and (ep.get("kind") == "shorts" or "short" in str(ep.get("kind") or "")):
+                stayed_note = "pending API (est. >50% by views volume — do not treat as 0)"
+            else:
+                stayed_note = "pending API (YouTube Analytics lag 24–48h — do not treat as 0)"
+
+        # recompute swipe if we recovered stayed
+        swipe = latest.get("swipe_away_pct")
+        if stayed is not None and swipe is None:
+            try:
+                swipe = round(max(0.0, min(100.0, 100.0 - float(stayed))), 2)
+            except Exception:
+                pass
+
+        just_published = hours_since_publish is not None and hours_since_publish < 6.0
+
+        if stayed is not None and (ep.get("kind") == "shorts" or "short" in str(ep.get("kind") or "")):
+            try:
+                stayed_vals.append(float(stayed))
+            except Exception:
+                pass
+
+        desc = meta.get("description") or disp.get("description") or ep.get("description") or ""
+        tags = meta.get("tags") or disp.get("tags") or ep.get("tags") or ""
+        if isinstance(tags, list):
+            tags = ", ".join(str(x) for x in tags)
+
+        row = {
+            "episode_id": ep["id"],
+            "title": ep.get("title") or meta.get("title") or disp.get("title"),
+            "kind": ep.get("kind"),
+            "duration_sec": ep.get("duration_sec") or meta.get("duration_sec") or latest.get("duration_sec"),
+            "views": views,
+            "likes": likes,
+            "comments": comments,
+            "engaged_views": engaged,
+            "engagement_rate_pct": eng_rate,
+            "engagement_rate_note": eng_rate_note,
+            "stayed_pct": stayed,
+            "stayed_source": stayed_source,
+            "stayed_note": stayed_note,
+            "swipe_away_pct": swipe,
+            "average_view_percentage": avg_pct,
+            "avg_view_duration_sec": avg_dur,
+            "impressions": latest.get("impressions"),
+            "impressions_ctr": latest.get("impressions_ctr"),
+            "published_at": published,
+            "hours_since_publish": round(hours_since_publish, 2) if hours_since_publish is not None else None,
+            "just_published": just_published,
+            "status": ep.get("status"),
+            "delta_views": delta,
+            "on_youtube": on_youtube,
+            "youtube_id": yt_id,
+            "description_lead": _first_sentences(desc, 2),
+            "tags": (tags or "")[:180],
+            "include_in_aggregate": latest.get("include_in_aggregate", True) if "include_in_aggregate" in latest else ep.get("include_in_aggregate", True),
+        }
+
+        if on_youtube:
+            videos.append(row)
+        else:
+            scheduled.append({
+                "episode_id": ep["id"],
+                "title": row["title"],
+                "kind": row["kind"],
+                "status": ep.get("status"),
+            })
+
+    # channel subscribers
+    subs = None
+    channel_title = "ZUPPY"
+    try:
+        if OYT.status().get("connected"):
+            ch = OYT.fetch_mine_channel()
+            if ch:
+                subs = ch.get("subscribers") or ch.get("subscriberCount")
+                channel_title = ch.get("channel_title") or channel_title
+                if subs is None and ch.get("statistics"):
+                    subs = int((ch.get("statistics") or {}).get("subscriberCount") or 0)
+    except Exception:
+        pass
+
+    avg_stayed = round(sum(stayed_vals) / len(stayed_vals), 1) if stayed_vals else None
+    timeline = sorted([{"date": d, "views": v} for d, v in day_views.items()], key=lambda x: x["date"])
+    cum = 0
+    cumulative = []
+    for row in timeline:
+        cum += row["views"]
+        cumulative.append({"date": row["date"], "views": row["views"], "cumulative": cum})
+
+    shorts = [v for v in videos if v.get("kind") == "shorts" or "short" in str(v.get("kind") or "")]
+    longs = [v for v in videos if v.get("kind") in ("long", "longs")]
+
+    # Channel age from earliest published
+    age_days = None
+    pub_dates = []
+    for v in videos:
+        nd = _norm_date(v.get("published_at"))
+        if nd:
+            try:
+                pub_dates.append(datetime.fromisoformat(nd).replace(tzinfo=timezone.utc))
+            except Exception:
+                try:
+                    pub_dates.append(datetime.strptime(nd, "%Y-%m-%d").replace(tzinfo=timezone.utc))
+                except Exception:
+                    pass
+    if pub_dates:
+        age_days = max(0, (datetime.now(timezone.utc) - min(pub_dates)).days)
+
+    total_views = sum(v["views"] for v in videos if v.get("include_in_aggregate") is not False)
+    subs_i = int(subs or 0)
+    watch_h = round(total_watch_h, 2)
+
+    # --- Structured AI prompt (no history, no errors, no drafts) ---
+    lines = []
+    lines.append(
+        "ROLE\n"
+        "You are the lead analyst and content strategist for the English-language YouTube channel "
+        f"{channel_title} (niche: 2D animated science/pop-psychology explainers; primary audience: USA and Tier-1 English markets)."
+    )
+    lines.append(
+        "\nTASK\n"
+        "Compare the latest published videos against each other. Find patterns that explain why some clips "
+        "reached ~1,000–2,600 views while others stalled at ~180–380. Evaluate like/comment conversion. "
+        "Then deliver: (A) 3 concrete script/hook fixes and (B) 3 validated topic ideas for upcoming episodes."
+    )
+    lines.append("\n=== CHANNEL SUMMARY ===")
+    lines.append(f"Channel: {channel_title}")
+    lines.append(f"Channel age (days since first release): {age_days if age_days is not None else 'unknown'}")
+    lines.append(f"Total views (sum of latest snapshots, published only): {total_views}")
+    lines.append(f"Estimated watch time (hours): {watch_h}")
+    lines.append(f"Subscribers: {subs if subs is not None else 'unknown'}")
+    lines.append(
+        f"Monetization progress: subscribers {subs_i}/500 (first threshold), {subs_i}/1000 (YP); "
+        f"watch hours {watch_h}/4000"
+    )
+    lines.append(f"Published videos in sample: {len(videos)} (Shorts={len(shorts)}, Longs={len(longs)})")
+    n_stayed = len(stayed_vals)
+    lines.append(
+        f"Avg Shorts «stayed to watch» %: {avg_stayed if avg_stayed is not None else 'n/a'} "
+        f"(averaged over {n_stayed} Shorts with known stayed_pct; "
+        f"videos still pending Analytics API are excluded — do not assume they are low)"
+    )
+    if timeline:
+        lines.append("Daily views timeline (date → peak recorded views that day):")
+        for row in timeline[-14:]:
+            lines.append(f"  - {row['date']}: {row['views']}")
+    else:
+        lines.append("Daily views timeline: no sync points yet")
+
+    lines.append("\n=== PUBLISHED VIDEOS (latest metrics only; history arrays omitted) ===")
+    lines.append(
+        "Notes for the analyst: "
+        "(1) stayed_pct may be recovered from local last-known value when Analytics API lags 24–48h; "
+        "if still pending, do NOT treat as zero. "
+        "(2) Videos younger than 6h may show views=0 — ignore zero stats. "
+        "(3) engagement_rate_pct is only computed when views >= 50."
+    )
+    for v in sorted(videos, key=lambda x: x.get("views") or 0, reverse=True):
+        kind = v.get("kind") or "?"
+        title = v.get("title") or "Untitled"
+        header = f"\n## [{kind}] {title}"
+        if v.get("just_published"):
+            header += "  [JUST PUBLISHED — IGNORE ZERO STATS]"
+        lines.append(header)
+        lines.append(f"- published_at: {v.get('published_at') or 'unknown'}")
+        hsp = v.get("hours_since_publish")
+        lines.append(f"- hours_since_publish: {hsp if hsp is not None else 'unknown'}")
+        lines.append(f"- duration_sec: {v.get('duration_sec') if v.get('duration_sec') is not None else 'unknown'}")
+        lines.append(f"- views: {v.get('views')}")
+        lines.append(f"- likes: {v.get('likes')}")
+        lines.append(f"- comments: {v.get('comments')}")
+        if v.get("engagement_rate_pct") is not None:
+            lines.append(f"- engagement_rate_pct ((likes+comments)/views*100): {v.get('engagement_rate_pct')}")
+        else:
+            lines.append(f"- engagement_rate_pct: {v.get('engagement_rate_note') or 'N/A (low sample)'}")
+        if v.get("stayed_pct") is not None:
+            lines.append(
+                f"- stayed_pct (continued watching): {v.get('stayed_pct')} "
+                f"(source={v.get('stayed_source') or 'unknown'})"
+            )
+        else:
+            lines.append(f"- stayed_pct: {v.get('stayed_note') or 'pending API'}")
+        lines.append(f"- swipe_away_pct: {v.get('swipe_away_pct')}")
+        lines.append(f"- average_view_percentage: {v.get('average_view_percentage')}")
+        lines.append(f"- avg_view_duration_sec: {v.get('avg_view_duration_sec')}")
+        if v.get("impressions") is not None or v.get("impressions_ctr") is not None:
+            lines.append(f"- impressions: {v.get('impressions')} | impressions_ctr: {v.get('impressions_ctr')}")
+        if v.get("description_lead"):
+            lines.append(f"- description_lead: {v.get('description_lead')}")
+        if v.get("tags"):
+            lines.append(f"- tags: {v.get('tags')}")
+
+    lines.append("\n=== SCHEDULED QUEUE (local drafts / not on YouTube — do NOT propose these topics) ===")
+    if scheduled:
+        for s in scheduled[:8]:
+            lines.append(f"- [{s.get('kind')}] {s.get('title')} (status={s.get('status')})")
+    else:
+        lines.append("- (empty)")
+
+    lines.append(
+        "\n=== REQUIRED RESPONSE FORMAT (no generic advice; answer ONLY these 4 sections) ===\n"
+        "1) Winners vs laggards: which concrete elements (runtime, title challenge, end-screen question, "
+        "first-frame contrast/hook) correlate with higher views and engagement in THIS dataset.\n"
+        "2) Growth bottleneck diagnosis: where growth is currently blocked (e.g. swipe-away in first 2s, "
+        "weak long-form CTR, low comment prompts).\n"
+        "3) SKILL_PROMPT_STRICT patches: 2–3 concrete rules to add to the script generator immediately.\n"
+        "4) Next 3 episodes plan (2 Shorts + 1 Long): topic, hook at t=0.0, and a pinned comment question "
+        "tuned for Women 25–34, USA."
+    )
+
+    # Attach current SKILL_PROMPT_STRICT as patch base
+    skill_text = None
+    skill_candidates = [
+        ROOT / "skill_prompts" / "SKILL_PROMPT_STRICT",
+        ROOT / "skill_prompts" / "SKILL_PROMPT_STRICT.md",
+        ROOT.parent / "YouTube" / "skill_prompts" / "SKILL_PROMPT_STRICT",
+        ROOT.parent / "YouTube" / "skill_prompts" / "SKILL_PROMPT_STRICT.md",
+        WEB_DIR.parent / "YouTube" / "skill_prompts" / "SKILL_PROMPT_STRICT",
+        WEB_DIR.parent / "YouTube" / "skill_prompts" / "SKILL_PROMPT_STRICT.md",
+    ]
+    for sp in skill_candidates:
+        try:
+            if sp.exists() and sp.is_file():
+                skill_text = sp.read_text(encoding="utf-8").strip()
+                if skill_text:
+                    break
+        except Exception:
+            continue
+    lines.append("\n=== CURRENT SKILL_PROMPT_STRICT (BASE FOR PATCHES) ===")
+    if skill_text:
+        # keep prompt size sane
+        if len(skill_text) > 12000:
+            skill_text = skill_text[:12000] + "\n…[truncated]"
+        lines.append(skill_text)
+    else:
+        lines.append("(SKILL_PROMPT_STRICT file not found under YouTube/skill_prompts/ — paste manually if needed)")
+
+    ai_prompt_text = "\n".join(lines)
+
+    return {
+        **base,
+        "kpi": {
+            "total_views": total_views,
+            "views_delta_approx": sum((v.get("delta_views") or 0) for v in videos if v.get("delta_views")),
+            "watch_hours": watch_h,
+            "watch_hours_goal": 4000,
+            "subscribers": subs,
+            "subscribers_goal_500": 500,
+            "subscribers_goal_1000": 1000,
+            "avg_stayed_pct": avg_stayed,
+            "channel_age_days": age_days,
+            "channel_title": channel_title,
+        },
+        "timeline_daily": timeline,
+        "timeline_cumulative": cumulative,
+        "releases": releases,
+        "scheduled_queue": scheduled[:8],
+        "shorts_battle": [
+            {
+                "episode_id": v["episode_id"],
+                "title": v["title"],
+                "stayed_pct": v.get("stayed_pct"),
+                "average_view_percentage": v.get("average_view_percentage"),
+                "views": v.get("views"),
+            }
+            for v in shorts
+        ],
+        "longs_reach": [
+            {
+                "episode_id": v["episode_id"],
+                "title": v["title"],
+                "impressions_ctr": v.get("impressions_ctr"),
+                "avg_view_duration_sec": v.get("avg_view_duration_sec"),
+                "views": v.get("views"),
+            }
+            for v in longs
+        ],
+        "ranking": sorted(videos, key=lambda x: x.get("views") or 0, reverse=True),
+        "ai_prompt_text": ai_prompt_text,
+    }
 
 
 @app.get("/api/analytics/stats")

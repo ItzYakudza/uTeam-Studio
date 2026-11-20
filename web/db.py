@@ -4,6 +4,8 @@ Episodes/channels live in DB; media files stay on disk under storage/.
 """
 from __future__ import annotations
 
+import re
+
 import json
 import sqlite3
 import shutil
@@ -334,19 +336,54 @@ def list_episodes(
     if q:
         sql += " AND (e.title LIKE ? OR e.tags LIKE ? OR e.description LIKE ?)"
         params.extend([f"%{q}%"] * 3)
-    sql += " ORDER BY e.updated_at DESC"
+    sql += " ORDER BY e.created_at DESC, e.id DESC"
     rows = conn.execute(sql, params).fetchall()
     conn.close()
     result = []
     for r in rows:
         d = dict(r)
-        d["disk_path"] = str(
+        disk = (
             STORAGE
             / d["channel_slug"]
             / ("shorts" if d["kind"] == "shorts" else "longs")
             / d["folder"]
         )
+        d["disk_path"] = str(disk)
+        # sort key: published_at (meta/youtube) → folder date in name → created_at → mtime
+        pub = None
+        meta_path = disk / "youtube_data" / "meta.json"
+        if meta_path.exists():
+            try:
+                import json
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                pub = meta.get("published_at") or meta.get("upload_date")
+            except Exception:
+                pub = None
+        if not pub:
+            # folder pattern: 001_slug_YYYY-MM-DD_HHMM
+            m = re.search(r"(\d{4}-\d{2}-\d{2})", d.get("folder") or "")
+            if m:
+                pub = m.group(1)
+        if not pub:
+            pub = d.get("created_at") or ""
+        d["_sort_pub"] = str(pub)
+        try:
+            d["_sort_mtime"] = disk.stat().st_mtime if disk.exists() else 0
+        except Exception:
+            d["_sort_mtime"] = 0
         result.append(d)
+
+    def _sort_key(ep: dict):
+        s = ep.get("_sort_pub") or ""
+        # normalize 20261119 → 2026-11-19
+        if len(s) >= 8 and s[:8].isdigit() and "-" not in s[:10]:
+            s = f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+        return (s, ep.get("_sort_mtime") or 0, ep.get("created_at") or "")
+
+    result.sort(key=_sort_key, reverse=True)
+    for ep in result:
+        ep.pop("_sort_pub", None)
+        ep.pop("_sort_mtime", None)
     return result
 
 
@@ -357,6 +394,178 @@ def get_episode(ep_id: int) -> Optional[dict]:
         return None
 
 
+def get_episode_by_youtube_id(youtube_id: str) -> Optional[dict]:
+    if not youtube_id:
+        return None
+    conn = connect()
+    row = conn.execute(
+        "SELECT id FROM episodes WHERE youtube_id=?",
+        (youtube_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return get_episode(row["id"])
+
+
+
+def find_episode_for_youtube_video(
+    video_id: str,
+    title: str = "",
+    channel_id: Optional[int] = None,
+) -> Optional[dict]:
+    """
+    Find an existing local episode for this YouTube video WITHOUT creating anything.
+    Order:
+      1) episodes.youtube_id
+      2) episodes.youtube_url contains video_id
+      3) youtube_data/meta.json on disk (DB episodes)
+      4) scan storage folders on disk for meta.json (even if DB row missing link)
+      5) title / folder-slug match among episodes (prefer ones with has_video / build)
+    """
+    if not video_id:
+        return None
+
+    # 1) exact youtube_id
+    ep = get_episode_by_youtube_id(video_id)
+    if ep:
+        return ep
+
+    # 2) youtube_url contains id
+    conn = connect()
+    row = conn.execute(
+        "SELECT id FROM episodes WHERE youtube_url LIKE ?",
+        (f"%{video_id}%",),
+    ).fetchone()
+    conn.close()
+    if row:
+        return get_episode(row["id"])
+
+    eps = list_episodes(channel_id=channel_id) if channel_id else list_episodes()
+
+    # 3) disk youtube_data/meta.json via known episodes
+    for e in eps:
+        try:
+            meta_path = Path(e["disk_path"]) / "youtube_data" / "meta.json"
+            if not meta_path.exists():
+                continue
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if meta.get("video_id") == video_id:
+                return e
+        except Exception:
+            continue
+
+    # 4) brute-scan storage for this channel (covers orphans / wrong kind folder)
+    channels = []
+    if channel_id:
+        ch = get_channel(channel_id)
+        if ch:
+            channels = [ch]
+    else:
+        channels = list_channels()
+    for ch in channels:
+        slug = ch.get("slug") or ""
+        for kind_dir in ("shorts", "longs"):
+            base = STORAGE / slug / kind_dir
+            if not base.is_dir():
+                continue
+            for folder in base.iterdir():
+                if not folder.is_dir():
+                    continue
+                meta_path = folder / "youtube_data" / "meta.json"
+                try:
+                    if meta_path.exists():
+                        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                        if meta.get("video_id") == video_id:
+                            # find DB row by folder name
+                            for e in eps:
+                                if e.get("folder") == folder.name and e.get("channel_id") == ch["id"]:
+                                    return e
+                            # DB row might use different kind — match folder only
+                            for e in eps:
+                                if e.get("folder") == folder.name:
+                                    return e
+                except Exception:
+                    continue
+
+    # 5) title / slug match — prefer rendered episodes without youtube link
+    if title:
+        import re
+
+        def tokens(s: str) -> set:
+            s = re.sub(r"[^a-z0-9а-яё\s]", " ", (s or "").lower())
+            return {t for t in s.split() if len(t) > 2}
+
+        def slug_key(s: str) -> str:
+            return slugify(s or "")
+
+        base = tokens(title)
+        title_slug = slug_key(title)
+        candidates = list(eps)
+        best, best_score = None, 0.0
+        for e in candidates:
+            # already linked to another video → skip
+            if e.get("youtube_id") and e.get("youtube_id") != video_id:
+                continue
+            score = 0.0
+            t = tokens(e.get("title") or "")
+            if base and t:
+                score = len(base & t) / max(len(base | t), 1)
+            # folder contains title slug
+            folder = (e.get("folder") or "").lower()
+            if title_slug and title_slug in folder:
+                score = max(score, 0.85)
+            # boost production episodes that already have a build
+            if e.get("has_video"):
+                score += 0.08
+            if score > best_score:
+                best_score, best = score, e
+        if best and best_score >= 0.42:
+            return best
+
+    return None
+
+
+
+def ensure_youtube_episode(
+    channel_id: int,
+    video_id: str,
+    title: str,
+    kind: str = "long",
+    duration_sec=None,
+    youtube_url=None,
+    create_if_missing: bool = True,
+) -> Optional[dict]:
+    """
+    Find existing episode for video_id (DB / url / disk / title) and link it.
+    Only create a new folder if create_if_missing and nothing matched.
+    """
+    existing = find_episode_for_youtube_video(video_id, title=title, channel_id=channel_id)
+    if existing:
+        fields = {
+            "youtube_id": video_id,
+            "youtube_url": youtube_url or existing.get("youtube_url") or f"https://www.youtube.com/watch?v={video_id}",
+        }
+        if title and (not existing.get("title") or existing.get("title") in ("", video_id)):
+            fields["title"] = title
+        # do NOT overwrite a good local production title with YT title by default
+        if duration_sec is not None:
+            fields["duration_sec"] = duration_sec
+        return update_episode(existing["id"], **fields)
+
+    if not create_if_missing:
+        return None
+
+    ep = create_episode(channel_id, title or video_id, kind=kind)
+    return update_episode(
+        ep["id"],
+        youtube_id=video_id,
+        youtube_url=youtube_url or f"https://www.youtube.com/watch?v={video_id}",
+        duration_sec=duration_sec,
+        status="rendered",
+    )
+
+
 def create_episode(channel_id: int, title: str, kind: str = "shorts") -> dict:
     kind = "shorts" if kind in ("short", "shorts") else "long"
     ch = get_channel(channel_id)
@@ -364,7 +573,6 @@ def create_episode(channel_id: int, title: str, kind: str = "shorts") -> dict:
         raise ValueError("Канал не найден")
 
     conn = connect()
-    # next index
     folder_base = STORAGE / ch["slug"] / ("shorts" if kind == "shorts" else "longs")
     folder_base.mkdir(parents=True, exist_ok=True)
     existing = [p.name for p in folder_base.iterdir() if p.is_dir()]
@@ -398,46 +606,36 @@ def create_episode(channel_id: int, title: str, kind: str = "shorts") -> dict:
     ep_path.mkdir(parents=True, exist_ok=True)
     mode = "shorts" if kind == "shorts" else "long"
     (ep_path / "script.txt").write_text("# Текст озвучки\n\n", encoding="utf-8")
-    scenes = f'''"""
-Episode: {title}
-Channel: {ch["slug"]}
-"""
-
-from core.toolkit import *
-
-MODE = "{mode}"
-CHANNEL_NAME = "{ch["slug"]}"
-
-TEXTS = [
-    "First sentence goes here.",
-    "Second sentence goes here.",
-]
-
-CHAPTERS = ["Hook", "Main"]
-
-TITLE = {title!r}
-DESC = """Description.
-
-SOURCES
-- ...
-"""
-TAGS = "tag1, tag2"
-
-def s01(cv, t, T):
-    title(cv, t, {title!r}, 56, 140)
-
-def s02(cv, t, T):
-    title(cv, t, "Scene 2", 52, 140)
-
-TRANSITIONS = {{}}
-
-_FN = {{"s01": s01, "s02": s02}}
-_BG = {{"s01": (255, 248, 225), "s02": (232, 240, 255)}}
-ORDER = ["s01", "s02"]
-SCENES = [(_BG[k], _FN[k]) for k in ORDER]
-'''
-    (ep_path / "scenes.py").write_text(scenes, encoding="utf-8")
+    scenes_lines = [
+        '"""',
+        f"Episode: {title}",
+        f"Channel: {ch['slug']}",
+        '"""',
+        "",
+        "from core.toolkit import *",
+        "",
+        f'MODE = "{mode}"',
+        f'CHANNEL_NAME = "{ch["slug"]}"',
+        "",
+        "TEXTS = [",
+        '    "First sentence goes here.",',
+        '    "Second sentence goes here.",',
+        "]",
+        "",
+        'CHAPTERS = ["Hook", "Main"]',
+        "",
+        f"TITLE = {title!r}",
+        'DESC = """Description.',
+        "",
+        "SOURCES",
+        "- ...",
+        '"""',
+        'TAGS = "tag1, tag2"',
+        "",
+    ]
+    (ep_path / "scenes.py").write_text("\n".join(scenes_lines) + "\n", encoding="utf-8")
     return get_episode(ep_id)  # type: ignore
+
 
 
 def update_episode(ep_id: int, **fields) -> dict:
@@ -540,6 +738,30 @@ def list_jobs(limit: int = 30) -> list[dict]:
     return out
 
 
+def delete_job(job_id: int) -> bool:
+    conn = connect()
+    cur = conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+    conn.commit()
+    conn.close()
+    return cur.rowcount > 0
+
+
+def clear_job_history(only_finished: bool = True) -> dict:
+    """Remove finished jobs from history. Active (queued/running) kept if only_finished."""
+    conn = connect()
+    if only_finished:
+        cur = conn.execute(
+            "DELETE FROM jobs WHERE status NOT IN ('queued', 'running')"
+        )
+    else:
+        cur = conn.execute("DELETE FROM jobs")
+    n = cur.rowcount
+    conn.commit()
+    conn.close()
+    return {"ok": True, "removed": n}
+
+
+
 def get_job(job_id: int) -> Optional[dict]:
     conn = connect()
     row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -619,6 +841,51 @@ def migrate_from_legacy() -> dict:
 
 
 # ---- analytics ----
+
+
+def dedupe_youtube_episodes(delete_folders: bool = False) -> dict:
+    """
+    Keep the oldest episode per youtube_id; unlink/remove newer duplicates.
+    If delete_folders=True, also remove duplicate folders from disk.
+    """
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT id, youtube_id, folder, channel_id, kind, created_at
+        FROM episodes
+        WHERE youtube_id IS NOT NULL AND youtube_id != ''
+        ORDER BY created_at ASC, id ASC
+        """
+    ).fetchall()
+    conn.close()
+
+    seen = {}
+    removed = []
+    for r in rows:
+        d = dict(r)
+        vid = d["youtube_id"]
+        if vid not in seen:
+            seen[vid] = d["id"]
+            continue
+        # duplicate
+        ep = get_episode(d["id"])
+        if not ep:
+            continue
+        if delete_folders:
+            try:
+                disk = Path(ep["disk_path"])
+                if disk.exists():
+                    shutil.rmtree(disk, ignore_errors=True)
+            except Exception:
+                pass
+        try:
+            delete_episode(d["id"])
+            removed.append({"id": d["id"], "youtube_id": vid, "folder": d.get("folder")})
+        except Exception as e:
+            removed.append({"id": d["id"], "youtube_id": vid, "error": str(e)})
+
+    return {"ok": True, "kept": len(seen), "removed": len(removed), "items": removed}
+
 
 def upsert_video_stats(episode_id: int, date: str, **fields) -> dict:
     allowed = {"views", "likes", "comments", "shares", "watch_time_h", "subscribers", "ctr", "source", "note"}

@@ -51,10 +51,149 @@ def write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def append_stats_line(path: Path, row: dict) -> None:
+def _parse_ts(val) -> Optional[datetime]:
+    if not val:
+        return None
+    try:
+        s = str(val).replace("Z", "+00:00")
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
+def _history_metrics_key(row: dict) -> tuple:
+    """Core counters used to decide if a snapshot is new."""
+    def _i(k):
+        v = row.get(k)
+        try:
+            return int(v) if v is not None else None
+        except Exception:
+            return None
+    def _f(k):
+        v = row.get(k)
+        try:
+            return round(float(v), 3) if v is not None else None
+        except Exception:
+            return None
+    return (
+        _i("views"),
+        _i("likes"),
+        _i("comments"),
+        _i("engaged_views"),
+        _f("avg_view_duration_sec"),
+        _f("average_view_percentage"),
+        _f("stayed_pct"),
+        _f("swipe_away_pct"),
+        _i("impressions"),
+    )
+
+
+def append_stats_line(
+    path: Path,
+    row: dict,
+    *,
+    min_interval_minutes: int = 30,
+    force: bool = False,
+) -> bool:
+    """
+    Append a history snapshot only if meaningful:
+      - views / likes / comments / engaged / retention metrics changed, OR
+      - at least min_interval_minutes passed since the last line.
+    Always safe to call; returns True if a line was written.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not force and path.exists() and path.stat().st_size > 0:
+        last = None
+        try:
+            # read last non-empty line
+            with path.open("rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                block = 4096
+                data = b""
+                while size > 0 and data.count(b"\n") < 2:
+                    step = min(block, size)
+                    size -= step
+                    f.seek(size)
+                    data = f.read(step) + data
+                lines = [ln for ln in data.splitlines() if ln.strip()]
+                if lines:
+                    last = json.loads(lines[-1].decode("utf-8"))
+        except Exception:
+            last = None
+
+        if last is not None:
+            same = _history_metrics_key(last) == _history_metrics_key(row)
+            if same:
+                last_ts = _parse_ts(last.get("ts") or last.get("checked_at") or last.get("date"))
+                now_ts = _parse_ts(row.get("ts") or row.get("checked_at")) or datetime.now().astimezone()
+                if last_ts is not None:
+                    # normalize tz-naive
+                    if last_ts.tzinfo is None and now_ts.tzinfo is not None:
+                        last_ts = last_ts.replace(tzinfo=now_ts.tzinfo)
+                    if now_ts.tzinfo is None and last_ts.tzinfo is not None:
+                        now_ts = now_ts.replace(tzinfo=last_ts.tzinfo)
+                    delta_min = (now_ts - last_ts).total_seconds() / 60.0
+                    if delta_min < max(1, int(min_interval_minutes)):
+                        return False
+                else:
+                    # no timestamp on last line — skip identical metrics
+                    return False
+
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return True
+
+
+
+def compact_stats_history(
+    ep_path: Path,
+    *,
+    min_interval_minutes: int = 30,
+) -> dict:
+    """
+    Rewrite stats.jsonl dropping consecutive identical metric snapshots
+    within min_interval_minutes. Keeps latest.json untouched.
+    """
+    path = yt_dir(ep_path) / "stats.jsonl"
+    if not path.exists():
+        return {"ok": True, "before": 0, "after": 0}
+    lines = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    before = len(lines)
+    kept: list[dict] = []
+    for ln in lines:
+        try:
+            row = json.loads(ln)
+        except Exception:
+            continue
+        if not kept:
+            kept.append(row)
+            continue
+        prev = kept[-1]
+        same = _history_metrics_key(prev) == _history_metrics_key(row)
+        if not same:
+            kept.append(row)
+            continue
+        prev_ts = _parse_ts(prev.get("ts") or prev.get("checked_at") or prev.get("date"))
+        cur_ts = _parse_ts(row.get("ts") or row.get("checked_at") or row.get("date"))
+        if prev_ts and cur_ts:
+            if prev_ts.tzinfo is None and cur_ts.tzinfo is not None:
+                prev_ts = prev_ts.replace(tzinfo=cur_ts.tzinfo)
+            if cur_ts.tzinfo is None and prev_ts.tzinfo is not None:
+                cur_ts = cur_ts.replace(tzinfo=prev_ts.tzinfo)
+            if (cur_ts - prev_ts).total_seconds() / 60.0 >= min_interval_minutes:
+                kept.append(row)
+            else:
+                # replace last with newer timestamp but same metrics
+                kept[-1] = row
+        else:
+            kept[-1] = row
+    path.write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in kept),
+        encoding="utf-8",
+    )
+    return {"ok": True, "before": before, "after": len(kept)}
 
 
 def local_preview_path(ep_path: Path) -> Optional[Path]:
@@ -211,52 +350,141 @@ def sync_episode_folder(ep_path: Path, url_or_id: str) -> dict:
     # yt-dlp sometimes has more fields on raw — ignore if absent
     write_json(d / "meta.json", meta)
 
+    published = (
+        meta.get("published_at")
+        or meta.get("upload_date")
+        or info.get("upload_date")
+        or info.get("published_at")
+    )
+
+    # --- Fast layer: views/likes/comments (Data API v3, ~minutes lag) ---
+    views = int(info.get("views") or 0)
+    likes = int(info.get("likes") or 0)
+    comments = int(info.get("comments") or 0)
+    fast_source = info.get("source") or "public"
+    try:
+        import oauth_youtube as OYT
+        if OYT.status().get("connected"):
+            fast = OYT.fetch_video_public_stats(meta["video_id"])
+            if fast.get("ok"):
+                views = int(fast.get("views") or views or 0)
+                likes = int(fast.get("likes") or likes or 0)
+                comments = int(fast.get("comments") or comments or 0)
+                if fast.get("duration_sec") is not None:
+                    meta["duration_sec"] = fast.get("duration_sec")
+                if fast.get("published_at"):
+                    published = fast.get("published_at")
+                    meta["published_at"] = published
+                if fast.get("privacy"):
+                    meta["privacy"] = fast.get("privacy")
+                if fast.get("thumbnail") and not info.get("thumbnail"):
+                    info["thumbnail"] = fast.get("thumbnail")
+                if fast.get("title") and not meta.get("title"):
+                    meta["title"] = fast.get("title")
+                fast_source = "youtube-data-api-v3"
+                # refresh meta on disk with richer fields
+                write_json(d / "meta.json", meta)
+    except Exception as e:
+        fast_source = f"public+err:{(str(e))[:80]}"
+
     snap = {
         "ts": _now_iso(),
         "date": YT.today(),
         "video_id": meta["video_id"],
         "url": meta["url"],
-        "views": int(info.get("views") or 0),
-        "likes": int(info.get("likes") or 0),
-        "comments": int(info.get("comments") or 0),
+        "views": views,
+        "likes": likes,
+        "comments": comments,
         "duration_sec": meta.get("duration_sec"),
-        "avg_view_duration_sec": info.get("avg_view_duration_sec"),  # usually null without Studio API
-        "retention_pct": info.get("retention_pct"),
-        "swipe_away_pct": info.get("swipe_away_pct"),
+        "avg_view_duration_sec": None,
+        "average_view_percentage": None,
+        "swipe_away_pct": None,
+        "stayed_pct": None,
         "privacy": meta.get("privacy"),
-        "source": info.get("source"),
+        "source": fast_source,
         "include_in_aggregate": True,
+        "layer": "fast",
     }
-    # Studio OAuth metrics (if connected)
+
+    # --- Deep layer: YouTube Analytics API only if age >= 24 hours ---
     try:
         import oauth_youtube as OYT
-        if OYT.status().get("connected"):
-            studio = OYT.video_studio_stats(meta["video_id"], days=365)
-            if studio.get("ok"):
-                snap["avg_view_duration_sec"] = studio.get("average_view_duration_sec")
-                snap["average_view_percentage"] = studio.get("average_view_percentage")
-                snap["swipe_away_pct"] = studio.get("swipe_away_pct")
-                snap["estimated_minutes_watched"] = studio.get("estimated_minutes_watched")
-                snap["shares"] = studio.get("shares")
-                snap["subscribers_gained"] = studio.get("subscribers_gained")
-                snap["subscribers_lost"] = studio.get("subscribers_lost")
-                # prefer analytics views if present
-                if studio.get("views") is not None:
-                    snap["views"] = int(studio.get("views") or snap.get("views") or 0)
-                if studio.get("likes") is not None:
-                    snap["likes"] = int(studio.get("likes") or snap.get("likes") or 0)
-                if studio.get("comments") is not None:
-                    snap["comments"] = int(studio.get("comments") or snap.get("comments") or 0)
-                snap["source"] = "youtube-analytics-api"
-                snap["studio"] = {k: studio.get(k) for k in (
-                    "average_view_duration_sec", "average_view_percentage", "swipe_away_pct",
-                    "estimated_minutes_watched", "shares", "subscribers_gained", "subscribers_lost",
-                    "range_start", "range_end",
-                )}
+        if not OYT.status().get("connected"):
+            snap["studio_error"] = "OAuth not connected"
+        else:
+            age_h = OYT.video_age_hours(published)
+            snap["age_hours"] = round(age_h, 2) if age_h is not None else None
+            # Unknown age → try Analytics (may still work)
+            too_new = age_h is not None and age_h < 24
+            if too_new:
+                snap["studio_skipped"] = True
+                snap["studio_skip_reason"] = (
+                    f"ролик младше 24ч ({age_h:.1f}h) — только Data API "
+                    "(views/likes ~5 мин). Analytics (ср. просмотр, реакция) после 24ч."
+                )
+            else:
+                studio = OYT.video_studio_stats(
+                    meta["video_id"],
+                    days=28,
+                    published_at=published,
+                )
+                if studio.get("ok"):
+                    snap["avg_view_duration_sec"] = studio.get("average_view_duration_sec")
+                    snap["average_view_percentage"] = studio.get("average_view_percentage")
+                    if snap.get("average_view_percentage") is None and snap.get("avg_view_duration_sec") is not None:
+                        dur = meta.get("duration_sec") or info.get("duration_sec")
+                        try:
+                            dur = float(dur) if dur else None
+                        except Exception:
+                            dur = None
+                        if dur and dur > 0:
+                            snap["average_view_percentage"] = round(
+                                min(200.0, (float(snap["avg_view_duration_sec"]) / dur) * 100.0), 2
+                            )
+                    snap["swipe_away_pct"] = studio.get("swipe_away_pct")
+                    snap["stayed_pct"] = studio.get("stayed_pct")
+                    snap["engaged_views"] = studio.get("engaged_views")
+                    snap["estimated_minutes_watched"] = studio.get("estimated_minutes_watched")
+                    snap["shares"] = studio.get("shares")
+                    snap["subscribers_gained"] = studio.get("subscribers_gained")
+                    snap["subscribers_lost"] = studio.get("subscribers_lost")
+                    snap["impressions"] = studio.get("impressions")
+                    snap["impressions_ctr"] = studio.get("impressions_ctr")
+                    snap["clicks_est"] = studio.get("clicks_est")
+                    if studio.get("retention"):
+                        snap["retention_early_drop_pct"] = (studio.get("retention") or {}).get("early_drop_pct")
+                    if studio.get("reporting_reach"):
+                        snap["reporting_reach"] = studio.get("reporting_reach")
+                    # Keep Data API views/likes as source of truth for counters;
+                    # only fill if Data API returned zeros and Analytics has numbers
+                    if (not views) and studio.get("views") is not None:
+                        snap["views"] = int(studio.get("views") or 0)
+                    if (not likes) and studio.get("likes") is not None:
+                        snap["likes"] = int(studio.get("likes") or 0)
+                    if (not comments) and studio.get("comments") is not None:
+                        snap["comments"] = int(studio.get("comments") or 0)
+                    snap["source"] = f"{fast_source}+youtube-analytics-api"
+                    snap["layer"] = "fast+deep"
+                    snap["studio"] = {k: studio.get(k) for k in (
+                        "average_view_duration_sec", "average_view_percentage", "swipe_away_pct",
+                        "stayed_pct", "engaged_views", "estimated_minutes_watched", "shares",
+                        "subscribers_gained", "subscribers_lost", "impressions", "impressions_ctr",
+                        "clicks_est", "range_start", "range_end", "range_label", "notes",
+                    )}
+                else:
+                    snap["studio_error"] = (studio.get("error") or "studio metrics unavailable")[:300]
+                    if studio.get("hint"):
+                        snap["studio_hint"] = studio["hint"]
     except Exception as e:
-        snap["studio_error"] = str(e)[:200]
+        snap["studio_error"] = str(e)[:300]
 
     append_stats_line(d / "stats.jsonl", snap)
+    # One-shot compact if file got bloated by frequent identical polls
+    try:
+        if (d / "stats.jsonl").exists() and (d / "stats.jsonl").stat().st_size > 50_000:
+            compact_stats_history(ep_path, min_interval_minutes=30)
+    except Exception:
+        pass
     write_json(d / "latest.json", snap)
 
     # cover from YT thumbnail only (not video frame)

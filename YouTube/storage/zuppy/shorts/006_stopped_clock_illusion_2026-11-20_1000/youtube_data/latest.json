@@ -1,3 +1,21 @@
 {
-  "include_in_aggregate": true
+  "ts": "2026-11-20T21:06:00+03:00",
+  "date": "2026-11-20",
+  "video_id": "k3adePx8OBw",
+  "url": "https://www.youtube.com/watch?v=k3adePx8OBw",
+  "views": 22,
+  "likes": 0,
+  "comments": 0,
+  "duration_sec": 26.0,
+  "avg_view_duration_sec": null,
+  "average_view_percentage": null,
+  "swipe_away_pct": null,
+  "stayed_pct": null,
+  "privacy": "public",
+  "source": "youtube-data-api-v3",
+  "include_in_aggregate": true,
+  "layer": "fast",
+  "age_hours": 1.1,
+  "studio_skipped": true,
+  "studio_skip_reason": "ролик младше 24ч (1.1h) — только Data API (views/likes ~5 мин). Analytics (ср. просмотр, реакция) после 24ч."
 }

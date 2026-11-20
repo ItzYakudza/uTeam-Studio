@@ -1,3 +1,4 @@
 {
-  "include_in_aggregate": true
+  "include_in_aggregate": false,
+  "unavailable_at": "2026-11-20T21:06:14+03:00"
 }

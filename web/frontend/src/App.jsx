@@ -67,40 +67,52 @@ function stageFromLogs(logs = []) {
   return { current, done }
 }
 
-function RenderTheater({ job, episodeTitle, onClose, onCancel, mode = 'full', onMode }) {
+function RenderTheater({ job, episodeTitle, mode, onMode, onClose, onCancel }) {
   if (!job) return null
-  const logs = Array.isArray(job.log) ? job.log : []
-  const { current, done } = stageFromLogs(logs)
+  const progress = jobProgress(job)
+  const stages = parseStages(job)
+  const stageList = [
+    { id: 'prepare', label: 'Подготовка' },
+    { id: 'audio', label: 'Аудио' },
+    { id: 'scenes', label: 'Сцены' },
+    { id: 'compose', label: 'Сборка' },
+    { id: 'encode', label: 'Кодирование' },
+    { id: 'done', label: 'Готово' },
+  ]
+  const current = stages.current
+  const done = new Set(stages.done || [])
   const isDone = job.status === 'done'
   const isErr = job.status === 'error' || job.status === 'cancelled'
-  const stageList = RENDER_STAGES
-  let progress = 8
-  if (isDone || job.status === 'cancelled' || job.status === 'error') progress = 100
-  else {
-    const idx = stageList.findIndex((s) => s.id === current)
-    progress = Math.min(95, Math.max(8, ((idx + 1) / stageList.length) * 100))
-  }
-  const plainLogs = logs.filter((l) => typeof l === 'string' && !l.startsWith('STAGE:')).slice(-8)
-  const statusLabel =
-    job.status === 'done' ? 'Готово' :
-    job.status === 'cancelled' ? 'Отменено' :
-    job.status === 'error' ? 'Ошибка' :
-    job.status === 'queued' ? 'В очереди' : 'Идёт сборка'
+  const statusLabel = isDone
+    ? 'Рендер завершён'
+    : job.status === 'cancelled'
+      ? 'Отменено'
+      : job.status === 'error'
+        ? 'Ошибка'
+        : job.status === 'queued'
+          ? 'В очереди…'
+          : 'Идёт рендер…'
+
+  const plainLogs = (Array.isArray(job.log) ? job.log : [])
+    .filter((l) => typeof l === 'string' && !String(l).startsWith('STAGE:'))
+    .slice(-12)
 
   if (mode === 'mini') {
     return (
       <div className="render-mini" onClick={() => onMode && onMode('full')}>
         <div className="render-mini-bar"><i style={{ width: progress + '%' }} /></div>
         <div className="render-mini-body">
-          <div>
-            <strong>{episodeTitle || 'Рендер'}</strong>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {episodeTitle || 'Рендер'}
+            </div>
             <div className="muted">{statusLabel} · {Math.round(progress)}%</div>
           </div>
-          <div className="row">
-            {!isDone && job.status !== 'cancelled' && job.status !== 'error' && (
+          <div className="row" onClick={(e) => e.stopPropagation()}>
+            {!isDone && !isErr && (
               <button className="btn btn-danger btn-sm" onClick={(e) => { e.stopPropagation(); onCancel && onCancel() }}>Отменить</button>
             )}
-            <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); onMode && onMode('full') }}>Развернуть</button>
+            <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); onMode && onMode('full') }}>На весь экран</button>
             <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); onClose && onClose() }}>Скрыть</button>
           </div>
         </div>
@@ -109,24 +121,26 @@ function RenderTheater({ job, episodeTitle, onClose, onCancel, mode = 'full', on
   }
 
   return (
-    <div className="render-theater">
-      <div className="render-card" onClick={(e) => e.stopPropagation()}>
-        <div className={`render-hero ${isDone ? 'done' : ''} ${isErr ? 'err' : ''}`}>
+    <div className="render-theater render-theater-full">
+      <div className="render-card render-card-full" onClick={(e) => e.stopPropagation()}>
+        <div className={`render-hero render-hero-full ${isDone ? 'done' : ''} ${isErr ? 'err' : ''}`}>
           <div className="render-hero-inner">
             <div className="render-ring">{isDone ? '✓' : job.status === 'cancelled' ? '✕' : ''}</div>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>{statusLabel}</div>
+            <div style={{ fontWeight: 700, fontSize: 18 }}>{statusLabel}</div>
+            <div className="muted" style={{ marginTop: 6 }}>{Math.round(progress)}%</div>
           </div>
           {!isDone && !isErr && <div className="film-strip" />}
         </div>
-        <div className="render-body">
+        <div className="render-body render-body-full">
           <div className="render-title">{episodeTitle || 'Рендер'}</div>
           <div className="render-sub">
-            {job.preview ? 'Preview' : 'Full quality'} · job #{job.id}
+            {job.preview ? 'Быстрый превью' : 'Полный рендер'} · задача #{job.id}
+            {job.channel_name ? ` · ${job.channel_name}` : ''}
           </div>
           <div className={`render-bar ${!isDone && !isErr && progress < 20 ? 'indeterminate' : ''}`}>
             <i style={{ width: progress + '%' }} />
           </div>
-          <div className="render-stages">
+          <div className="render-stages render-stages-grid">
             {stageList.map((s) => {
               const stCls = isDone || done.has(s.id) ? 'done' : current === s.id ? 'active' : ''
               return (
@@ -141,18 +155,18 @@ function RenderTheater({ job, episodeTitle, onClose, onCancel, mode = 'full', on
             <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 8 }}>{job.error}</div>
           )}
           {plainLogs.length > 0 && (
-            <div className="render-log">
+            <div className="render-log render-log-full">
               {plainLogs.map((l, i) => (
                 <div key={i}>{l}</div>
               ))}
             </div>
           )}
           <div className="render-actions">
-            {!isDone && job.status !== 'cancelled' && job.status !== 'error' && (
-              <button className="btn btn-danger" onClick={onCancel}>Отменить рендер</button>
-            )}
-            {!isDone && job.status !== 'cancelled' && job.status !== 'error' && (
-              <button className="btn btn-ghost" onClick={() => onMode && onMode('mini')}>Свернуть</button>
+            {!isDone && !isErr && (
+              <>
+                <button className="btn btn-danger" onClick={onCancel}>Отменить</button>
+                <button className="btn btn-ghost" onClick={() => onMode && onMode('mini')}>Свернуть</button>
+              </>
             )}
             {(isDone || isErr) && (
               <button className="btn btn-primary" onClick={onClose}>{isDone ? 'Готово' : 'Закрыть'}</button>
@@ -179,7 +193,7 @@ export default function App()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [toast, setToast] = useState(null)
-  const [preview, setPreview] = useState(true)
+  const [preview, setPreview] = useState(false)
 
   const [showNewChannel, setShowNewChannel] = useState(false)
   const [showNewEpisode, setShowNewEpisode] = useState(false)
@@ -197,6 +211,7 @@ export default function App()
   const [doctor, setDoctor] = useState(null)
   const [analytics, setAnalytics] = useState(null)
   const [analyticsVideo, setAnalyticsVideo] = useState(null)
+  const [analyticsTab, setAnalyticsTab] = useState('overview') // overview | formats | ranking
   const [channelYtUrl, setChannelYtUrl] = useState('')
   const [oauthStatus, setOauthStatus] = useState(null)
   const [activeJobId, setActiveJobId] = useState(null)
@@ -250,12 +265,92 @@ export default function App()
     loadChannels()
     loadEpisodes()
     loadJobs()
-    const t = setInterval(() => {
-      loadJobs()
-      loadEpisodes()
-    }, 3000)
-    return () => clearInterval(t)
+    loadOauthStatus()
   }, [loadChannels, loadEpisodes, loadJobs])
+
+  // Content tab: refresh list at most once per minute (not every few seconds)
+  useEffect(() => {
+    if (page !== 'content' && page !== 'episode') return
+    const t = setInterval(() => {
+      loadEpisodes()
+    }, 60 * 1000)
+    return () => clearInterval(t)
+  }, [page, loadEpisodes])
+
+  // Renders tab: jobs a bit more often
+  useEffect(() => {
+    if (page !== 'renders') return
+    const t = setInterval(() => loadJobs(), 15 * 1000)
+    return () => clearInterval(t)
+  }, [page, loadJobs])
+
+  // While render theater is open — poll job status frequently
+  useEffect(() => {
+    if (!showTheater || !activeJobId) return
+    loadJobs()
+    const t = setInterval(() => loadJobs(), 2000)
+    return () => clearInterval(t)
+  }, [showTheater, activeJobId, loadJobs])
+
+  // When OAuth is connected: auto-sync from YouTube (content + analytics) without manual clicks.
+  // Runs once shortly after OAuth status is known, then every 10 minutes while the app is open.
+  const autoSyncRef = useRef({ last: 0, inFlight: false })
+  useEffect(() => {
+    if (!oauthStatus?.connected) return
+
+    const runAutoSync = async (force = false) => {
+      const now = Date.now()
+      if (autoSyncRef.current.inFlight) return
+      if (!force && now - autoSyncRef.current.last < 9 * 60 * 1000) return
+      autoSyncRef.current.inFlight = true
+      try {
+        await api('/youtube/sync-all', { method: 'POST' })
+        autoSyncRef.current.last = Date.now()
+        await loadEpisodes()
+        if (page === 'analytics') {
+          try {
+            setAnalytics(await api('/analytics/dashboard'))
+          } catch {}
+        }
+        if (analyticsVideo?.episode?.id) {
+          try {
+            const data = await api(`/episodes/${analyticsVideo.episode.id}/analytics`)
+            setAnalyticsVideo(data)
+          } catch {}
+        }
+      } catch {
+        // silent — worker / next tick will retry
+      } finally {
+        autoSyncRef.current.inFlight = false
+      }
+    }
+
+    // first sync soon after connect / page load
+    const initial = setTimeout(() => runAutoSync(true), 2500)
+    const interval = setInterval(() => runAutoSync(false), 10 * 60 * 1000)
+    return () => {
+      clearTimeout(initial)
+      clearInterval(interval)
+    }
+  }, [oauthStatus?.connected, page, analyticsVideo?.episode?.id, loadEpisodes])
+
+  // While on Analytics page with OAuth — keep summary fresh every 90s (no button)
+  useEffect(() => {
+    if (page !== 'analytics' || !oauthStatus?.connected) return
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const data = await api('/analytics/summary')
+        if (!cancelled) setAnalytics(data)
+      } catch {}
+    }
+    tick()
+    const t = setInterval(tick, 90 * 1000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [page, oauthStatus?.connected])
 
   async function openEpisode(ep) {
     setSelected(ep)
@@ -358,7 +453,7 @@ export default function App()
       setActiveJobId(res.job_id)
       setTheaterMode('full')
       setShowTheater(true)
-      notify(preview ? 'Preview запущен' : 'Рендер запущен')
+      notify(preview ? 'Быстрый превью запущен' : 'Полный рендер запущен')
       loadJobs()
     } catch (e) {
       notify(e.message, true)
@@ -368,7 +463,7 @@ export default function App()
   async function startSheet(ep) {
     try {
       await api('/sheet', { method: 'POST', body: JSON.stringify({ episode_id: ep.id }) })
-      notify('Contact sheet запущен')
+      notify('Сетка кадров запущена')
       loadJobs()
     } catch (e) {
       notify(e.message, true)
@@ -418,7 +513,7 @@ export default function App()
       setYtUrl(res.episode.youtube_url || ytUrl)
       notify(`YouTube OK · ${res.youtube?.views ?? 0} views`)
       loadEpisodes()
-      if (page === 'analytics') setAnalytics(await api('/analytics/summary'))
+      if (page === 'analytics') setAnalytics(await api('/analytics/dashboard'))
     } catch (e) {
       notify(e.message, true)
     } finally {
@@ -431,9 +526,9 @@ export default function App()
     try {
       const res = await api(`/episodes/${ep.id}/youtube/sync`, { method: 'POST' })
       setSelected(res.episode)
-      notify(`Синк · ${res.youtube?.views ?? 0} views`)
+      notify(`Обновлено · ${res.youtube?.views ?? 0} просмотров`)
       loadEpisodes()
-      if (page === 'analytics') setAnalytics(await api('/analytics/summary'))
+      if (page === 'analytics') setAnalytics(await api('/analytics/dashboard'))
     } catch (e) {
       notify(e.message, true)
     } finally {
@@ -495,7 +590,7 @@ export default function App()
         method: 'POST',
         body: JSON.stringify({ include }),
       })
-      setAnalytics(await api('/analytics/summary'))
+      setAnalytics(await api('/analytics/dashboard'))
       if (analyticsVideo?.episode?.id === epId) {
         const data = await api(`/episodes/${epId}/analytics`)
         setAnalyticsVideo(data)
@@ -525,12 +620,20 @@ export default function App()
       const res = await api(`/channels/${channelId}/youtube/auto-link`, { method: 'POST' })
       notify(`Автопривязка: ${(res.linked || []).length} из ${res.candidates}`)
       loadEpisodes()
-      try { setAnalytics(await api('/analytics/summary')) } catch {}
+      try { setAnalytics(await api('/analytics/dashboard')) } catch {}
     } catch (e) {
       notify(e.message, true)
     } finally {
       setYtBusy(false)
     }
+  }
+
+  async function deleteJob(id) {
+    try {
+      await api(`/jobs/${id}`, { method: 'DELETE' })
+      notify('Запись удалена')
+      loadJobs()
+    } catch (e) { notify(e.message, true) }
   }
 
   async function cancelJob(jobId) {
@@ -547,9 +650,9 @@ export default function App()
     setYtBusy(true)
     try {
       const res = await api('/youtube/sync-all', { method: 'POST' })
-      notify(`Синк: ${res.synced} ок, ${res.skipped} без ссылки, ${res.failed} ошибок`)
+      notify(`Обновлено: ${res.synced} ок, ${res.skipped} без ссылки, ${res.failed} ошибок`)
       loadEpisodes()
-      setAnalytics(await api('/analytics/summary'))
+      setAnalytics(await api('/analytics/dashboard'))
     } catch (e) {
       notify(e.message, true)
     } finally {
@@ -614,11 +717,12 @@ export default function App()
             </span>
           )}
         </div>
+        <div className="section-label">Данные</div>
         <div
           className={`nav-item ${page === 'analytics' ? 'active' : ''}`}
           onClick={async () => {
             setPage('analytics')
-            try { setAnalytics(await api('/analytics/summary')) } catch (e) { notify(e.message, true) }
+            try { setAnalytics(await api('/analytics/dashboard')) } catch (e) { notify(e.message, true) }
           }}
         >
           <span className="dot" /> Аналитика
@@ -634,7 +738,7 @@ export default function App()
           <span className="dot" /> Система
         </div>
 
-        <div className="section-label">Каналы</div>
+        <div className="section-label">Фильтр канала</div>
         <div
           className={`nav-item ${channelFilter === null && page === 'content' ? 'active' : ''}`}
           onClick={() => {
@@ -672,20 +776,41 @@ export default function App()
 
       <div className="main">
         <header className="topbar">
-          <input
-            className="search"
-            placeholder="Поиск по названию, тегам…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
+          {(page === 'content') ? (
+            <input
+              className="search"
+              placeholder="Поиск по названию, тегам…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+          ) : (
+            <div className="muted" style={{ fontSize: 13 }}>
+              {page === 'episode' && 'Редактор ролика'}
+              {page === 'channels' && 'Каналы'}
+              {page === 'renders' && 'Очередь и история рендеров'}
+              {page === 'analytics' && 'Аналитика канала'}
+              {page === 'system' && 'Настройки и окружение'}
+            </div>
+          )}
           <div className="row">
-            <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <input type="checkbox" checked={preview} onChange={(e) => setPreview(e.target.checked)} />
-              Preview
-            </label>
-            <button className="btn btn-ghost btn-sm" onClick={() => { loadEpisodes(); loadChannels() }}>
-              Обновить
-            </button>
+            {page === 'content' && (
+              <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6 }} title="Низкое качество, быстрее проверить сборку">
+                <input type="checkbox" checked={preview} onChange={(e) => setPreview(e.target.checked)} /> Быстрый превью
+              </label>
+            )}
+            {page === 'content' && (
+              <button className="btn btn-ghost btn-sm" onClick={() => { loadEpisodes(); loadChannels() }}>
+                Обновить список
+              </button>
+            )}
+            {page === 'renders' && (
+              <button className="btn btn-ghost btn-sm" onClick={loadJobs}>Обновить очередь</button>
+            )}
+            {page === 'analytics' && (
+              <button className="btn btn-ghost btn-sm" onClick={async () => {
+                try { setAnalytics(await api('/analytics/dashboard')) } catch (e) { notify(e.message, true) }
+              }}>Обновить обзор</button>
+            )}
           </div>
         </header>
 
@@ -701,7 +826,11 @@ export default function App()
           {page === 'content' && (
             <>
               <div className="page-title">Контент канала</div>
-              <div className="page-sub">Как YouTube Studio — список роликов, статусы, быстрые действия</div>
+              <div className="page-sub">
+                {oauthStatus?.connected
+                  ? 'OAuth подключён — статистика и метаданные с YouTube подтягиваются автоматически'
+                  : 'Как YouTube Studio — список роликов, статусы, быстрые действия. Подключи OAuth в «Система» для авто-обновления.'}
+              </div>
 
               <div className="stats">
                 <div className="stat"><div className="stat-val">{stats.total}</div><div className="stat-label">Всего</div></div>
@@ -754,17 +883,15 @@ export default function App()
                         <div className="video-meta">
                           <span>{ep.channel_name}</span>
                           <span>·</span>
-                          <span>{ep.has_voice ? 'voice' : 'no voice'}</span>
+                          <span>{ep.kind === 'shorts' ? 'Shorts' : 'Long'}</span>
                           <span>·</span>
-                          <span>{ep.youtube_id ? 'YT' : 'no YT'}</span>
-                          {ep.yt_views != null && <span>· {ep.yt_views} views</span>}
+                          <span>{ep.has_voice ? 'Озвучка есть' : 'Нет озвучки'}</span>
+                          {ep.yt_views != null && <span>· {Number(ep.yt_views).toLocaleString('ru-RU')} просм.</span>}
                         </div>
                         <div className="video-actions" onClick={(e) => e.stopPropagation()}>
-                          <button className="btn btn-sm btn-success" disabled={!ep.has_voice || !ep.has_scenes} onClick={() => startRender(ep)}>
-                            Собрать
-                          </button>
-                          <button className="btn btn-sm btn-ghost" onClick={() => openEpisode(ep)}>Открыть</button>
-                          <button className="btn btn-sm btn-danger" onClick={() => removeEpisode(ep)}>×</button>
+                          <button className="btn btn-sm btn-primary" onClick={() => openEpisode(ep)}>Открыть</button>
+                          <button className="btn btn-sm btn-ghost" onClick={() => openAnalyticsVideo(ep.id)}>Метрики</button>
+                          <button className="btn btn-sm btn-danger" onClick={() => removeEpisode(ep)}>Удалить</button>
                         </div>
                       </div>
                     </div>
@@ -793,7 +920,7 @@ export default function App()
                     disabled={!selected.has_voice || !selected.has_scenes}
                     onClick={() => startRender(selected)}
                   >
-                    {preview ? 'Preview' : 'Собрать'}
+                    {preview ? 'Быстрый превью' : 'Собрать ролик'}
                   </button>
                 </div>
               </div>
@@ -855,7 +982,7 @@ export default function App()
                         Данные пишутся в папку ролика <code>youtube_data/</code> (meta, stats, thumb). Воркер обновляет раз в час.
                       </p>
                       <div className="row">
-                        <button className="btn btn-primary btn-sm" disabled={ytBusy} onClick={() => linkYoutube(selected, false)}>
+                        <button className="btn btn-primary btn-sm" disabled={ytBusy} onClick={() => linkYoutube(selected, false)} title="Привязать ссылку и скачать метрики">
                           {ytBusy ? '…' : 'Привязать + статистика'}
                         </button>
                         <button className="btn btn-ghost btn-sm" disabled={ytBusy} onClick={() => linkYoutube(selected, true)}>
@@ -863,7 +990,7 @@ export default function App()
                         </button>
                         {selected.youtube_id && (
                           <button className="btn btn-ghost btn-sm" disabled={ytBusy} onClick={() => syncYoutube(selected)}>
-                            Синк
+                            Обновить с YouTube
                           </button>
                         )}
                       </div>
@@ -877,7 +1004,7 @@ export default function App()
                         {uploading ? 'Загрузка…' : 'Загрузить озвучку'}
                       </button>
                       <button className="btn btn-success" disabled={!selected.has_voice || !selected.has_scenes} onClick={() => startRender(selected)}>
-                        Собрать ролик {preview ? '(preview)' : ''}
+                        Собрать ролик{preview ? ' (быстрый)' : ''}
                       </button>
                       <button className="btn btn-ghost" disabled={!selected.has_voice} onClick={() => startSheet(selected)}>
                         Контактный лист
@@ -908,7 +1035,7 @@ export default function App()
               <div className="page-sub">Управление каналами. Данные в SQLite, файлы в storage/</div>
               <div className="row" style={{ marginBottom: 16 }}>
                 <button className="btn btn-primary" onClick={() => setShowNewChannel(true)}>+ Канал</button>
-                <button className="btn btn-ghost" onClick={runMigrate}>Импорт старых папок</button>
+                <button className="btn btn-ghost" onClick={runMigrate} title="Перенести эпизоды из старой структуры папок в storage">Импорт из папок</button>
               </div>
               <div className="video-grid">
                 {channels.map((c) => (
@@ -953,8 +1080,24 @@ export default function App()
           
           {page === 'renders' && (
             <>
-              <div className="page-title">Рендеры</div>
-              <div className="page-sub">Активные и недавние сборки. Можно открыть на весь экран, свернуть или отменить.</div>
+              <div className="an-head" style={{ marginBottom: 8 }}>
+                <div>
+                  <div className="page-title">Рендеры</div>
+                  <div className="page-sub" style={{ marginBottom: 0 }}>Очередь и история сборок. Активные задачи сверху.</div>
+                </div>
+                <div className="an-actions">
+                  <button className="btn btn-ghost btn-sm" onClick={loadJobs}>Обновить список</button>
+                  <button className="btn btn-danger btn-sm" onClick={async () => {
+                    if (!confirm('Удалить всю историю завершённых рендеров? Активные задачи останутся.')) return
+                    try {
+                      const r = await api('/jobs/clear-history?only_finished=true', { method: 'POST' })
+                      notify(`Удалено записей: ${r.removed || 0}`)
+                      loadJobs()
+                    } catch (e) { notify(e.message, true) }
+                  }}>Очистить историю</button>
+                </div>
+              </div>
+
               <div className="video-grid">
                 {jobs.length === 0 ? (
                   <div className="empty">Пока нет задач рендера</div>
@@ -967,11 +1110,11 @@ export default function App()
                           <div className="video-title">{j.episode_title || `Job #${j.id}`}</div>
                           <div className="video-meta">
                             <span className={active ? 'job-run' : j.status === 'done' ? 'job-ok' : 'job-err'}>
-                              {j.status}
+                              {j.status === 'done' ? 'Готово' : j.status === 'running' ? 'Идёт' : j.status === 'queued' ? 'Очередь' : j.status === 'cancelled' ? 'Отменено' : j.status === 'error' ? 'Ошибка' : j.status}
                             </span>
                             <span>·</span>
                             <span>{j.kind}</span>
-                            {j.preview ? <span>· preview</span> : null}
+                            {j.preview ? <span>· быстрый</span> : null}
                           </div>
                           <div className="video-actions">
                             {active && (
@@ -999,6 +1142,9 @@ export default function App()
                                 setShowTheater(true)
                               }}>Открыть</button>
                             )}
+                            {!active && (
+                              <button className="btn btn-sm btn-danger" onClick={() => deleteJob(j.id)}>Удалить</button>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1009,184 +1155,335 @@ export default function App()
             </>
           )}
 
-{page === 'analytics' && (
-            <>
-              <div className="page-title">Аналитика</div>
-              <div className="page-sub">
-                Только данные с YouTube. Ручной ввод отключён. Можно исключить ролик из общей статистики.
-              </div>
-              <div className="row" style={{ marginBottom: 16 }}>
-                <button className="btn btn-primary" disabled={ytBusy} onClick={syncAllYoutube}>
-                  {ytBusy ? 'Синк…' : 'Синк всех с YouTube'}
-                </button>
-                <a className="btn btn-ghost" href={`${API}/analytics/export?format=json`} target="_blank" rel="noreferrer">Export JSON</a>
-                <a className="btn btn-ghost" href={`${API}/analytics/export?format=md`} target="_blank" rel="noreferrer">Export MD</a>
+          {page === 'analytics' && (
+            <div className="an-wrap">
+              <div className="an-head">
+                <div className="an-head-left">
+                  <div className="page-title" style={{ marginBottom: 4 }}>Аналитика</div>
+                  <div className="page-sub" style={{ marginBottom: 0 }}>
+                    {oauthStatus?.connected
+                      ? 'Live YouTube · Data API сразу · Studio Metrics после 24ч'
+                      : 'Подключи OAuth в «Система», чтобы подтянуть метрики канала'}
+                  </div>
+                </div>
+                <div className="an-actions">
+                  <button className="btn btn-ghost btn-sm" disabled={ytBusy} onClick={async () => {
+                    await syncAllYoutube()
+                    try { setAnalytics(await api('/analytics/dashboard')) } catch {}
+                  }}>{ytBusy ? 'Обновление…' : 'Обновить с YouTube'}</button>
+                  <button className="btn btn-ghost btn-sm" onClick={async () => {
+                    try { setAnalytics(await api('/analytics/dashboard')) } catch (e) { notify(e.message, true) }
+                  }} title="Пересчитать обзор без полного синка">Обновить обзор</button>
+                  <button className="btn btn-primary btn-sm" onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(analytics?.ai_prompt_text || '')
+                      notify('Сводка для ИИ скопирована')
+                    } catch { notify('Не удалось скопировать', true) }
+                  }} title="Скопировать структурированный промпт для ИИ-аналитика">Скопировать промпт для аналитика</button>
+                  <a className="btn btn-ghost btn-sm" href={`${API}/analytics/export?format=json`} target="_blank" rel="noreferrer" title="Скачать сырые данные">Экспорт JSON</a>
+                </div>
               </div>
 
-              <div className="stats">
-                <div className="stat"><div className="stat-val">{analytics?.total_views ?? '—'}</div><div className="stat-label">Просмотры (активные)</div></div>
-                <div className="stat"><div className="stat-val">{analytics?.total_likes ?? '—'}</div><div className="stat-label">Лайки</div></div>
-                <div className="stat"><div className="stat-val">{analytics?.total_comments ?? '—'}</div><div className="stat-label">Комменты</div></div>
-                <div className="stat"><div className="stat-val">{analytics?.active_count ?? '—'}</div><div className="stat-label">В общей статистике</div></div>
-                <div className="stat"><div className="stat-val">{analytics?.excluded_count ?? '—'}</div><div className="stat-label">Исключено</div></div>
-                <div className="stat"><div className="stat-val">{analytics?.episodes_rendered ?? '—'}</div><div className="stat-label">Собрано роликов</div></div>
+              <div className="an-pills">
+                <button className={`an-pill ${analyticsTab === 'overview' ? 'active' : ''}`} onClick={() => setAnalyticsTab('overview')}>Обзор</button>
+                <button className={`an-pill ${analyticsTab === 'formats' ? 'active' : ''}`} onClick={() => setAnalyticsTab('formats')}>Форматы</button>
+                <button className={`an-pill ${analyticsTab === 'ranking' ? 'active' : ''}`} onClick={() => setAnalyticsTab('ranking')}>Рейтинг</button>
               </div>
 
-              {(analytics?.timeline || []).length > 0 && (
-                <div className="panel" style={{ marginBottom: 16 }}>
-                  <div className="panel-h">Динамика просмотров по дням синка</div>
-                  <div className="panel-b">
-                    <div className="chart-bars">
-                      {analytics.timeline.map((d) => {
-                        const max = Math.max(...analytics.timeline.map((x) => x.views), 1)
-                        const h = Math.max(6, Math.round((d.views / max) * 140))
+              {/* KPI always visible */}
+              <div className="an-kpi-grid">
+                <div className="an-kpi">
+                  <div className="an-kpi-label">Просмотры</div>
+                  <div className="an-kpi-val">
+                    {(analytics?.kpi?.total_views ?? analytics?.total_views ?? '—')}
+                    {analytics?.kpi?.views_delta_approx ? (
+                      <span className="an-kpi-badge">+{Number(analytics.kpi.views_delta_approx).toLocaleString('ru-RU')}</span>
+                    ) : null}
+                  </div>
+                  <div className="an-kpi-sub">Сумма по активным роликам · прирост с прошлого синка</div>
+                </div>
+
+                <div className="an-kpi">
+                  <div className="an-kpi-label">Время просмотра</div>
+                  <div className="an-kpi-val">{analytics?.kpi?.watch_hours != null ? `${analytics.kpi.watch_hours} ч` : '—'}</div>
+                  <div className="an-progress"><i style={{ width: `${Math.min(100, ((analytics?.kpi?.watch_hours || 0) / 4000) * 100)}%` }} /></div>
+                  <div className="an-kpi-sub">До монетизации 4000 ч · сейчас {analytics?.kpi?.watch_hours ?? 0} ч</div>
+                </div>
+
+                <div className="an-kpi">
+                  <div className="an-kpi-label">Подписчики</div>
+                  <div className="an-kpi-val">{analytics?.kpi?.subscribers != null ? Number(analytics.kpi.subscribers).toLocaleString('ru-RU') : '—'}</div>
+                  <div className="an-progress blue"><i style={{ width: `${Math.min(100, ((analytics?.kpi?.subscribers || 0) / 1000) * 100)}%` }} /></div>
+                  <div className="an-kpi-sub">Пороги 500 / 1000 для партнёрки</div>
+                </div>
+
+                <div className={`an-kpi ${analytics?.kpi?.avg_stayed_pct >= 50 ? 'good' : (analytics?.kpi?.avg_stayed_pct != null && analytics?.kpi?.avg_stayed_pct < 40 ? 'warn' : '')}`}>
+                  <div className="an-kpi-label">Продолжили смотреть</div>
+                  <div className="an-kpi-val" style={{
+                    color: analytics?.kpi?.avg_stayed_pct >= 50 ? '#4ade80'
+                      : (analytics?.kpi?.avg_stayed_pct != null && analytics?.kpi?.avg_stayed_pct < 40) ? '#f87171' : undefined
+                  }}>
+                    {analytics?.kpi?.avg_stayed_pct != null ? `${analytics.kpi.avg_stayed_pct}%` : '—'}
+                  </div>
+                  <div className="an-progress green"><i style={{ width: `${Math.min(100, analytics?.kpi?.avg_stayed_pct || 0)}%` }} /></div>
+                  <div className="an-kpi-sub">Среднее по Shorts · зелёный ≥50%, красный &lt;40%</div>
+                </div>
+              </div>
+
+              {analyticsTab === 'overview' && (
+                <>
+                  <div className="an-section">
+                    <div className="an-section-h">
+                      <h3>Динамика канала</h3>
+                      <span>Накопительные просмотры по дням синка</span>
+                    </div>
+                    <div className="an-section-b">
+                      {(analytics?.timeline_cumulative || analytics?.timeline || []).length > 0 ? (
+                        <div className="an-chart">
+                          {(analytics.timeline_cumulative || analytics.timeline).map((d, i) => {
+                            const series = analytics.timeline_cumulative || analytics.timeline
+                            const max = Math.max(...series.map((x) => x.cumulative || x.views || 0), 1)
+                            const val = d.cumulative != null ? d.cumulative : d.views
+                            const h = Math.max(8, Math.round((val / max) * 140))
+                            return (
+                              <div key={i} className="an-chart-col" title={`${d.date}: ${val}`}>
+                                <div className="an-chart-val">{val}</div>
+                                <div className="an-chart-bar" style={{ height: h }} />
+                                <div className="an-chart-lbl">{(d.date || '').slice(5)}</div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <div className="an-empty">Нет данных для графика — сделай синк YouTube</div>
+                      )}
+                      {(analytics?.releases || []).length > 0 && (
+                        <div className="muted" style={{ marginTop: 14, fontSize: 12 }}>
+                          Релизы: {(analytics.releases || []).slice(0, 10).map((r, i) => (
+                            <span key={i} style={{ marginRight: 10 }}>
+                              {(r.published_at || '').toString().slice(0, 10)} · {r.kind}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="an-section">
+                    <div className="an-section-h">
+                      <h3>Сводка</h3>
+                      <span>{analytics?.active_count ?? '—'} в статистике · {analytics?.excluded_count ?? 0} исключено</span>
+                    </div>
+                    <div className="an-section-b">
+                      <div className="an-kpi-grid" style={{ gridTemplateColumns: 'repeat(3, minmax(0,1fr))' }}>
+                        <div className="an-kpi">
+                          <div className="an-kpi-label">Лайки</div>
+                          <div className="an-kpi-val">{analytics?.total_likes ?? '—'}</div>
+                        </div>
+                        <div className="an-kpi">
+                          <div className="an-kpi-label">Комментарии</div>
+                          <div className="an-kpi-val">{analytics?.total_comments ?? '—'}</div>
+                        </div>
+                        <div className="an-kpi">
+                          <div className="an-kpi-label">Собрано роликов</div>
+                          <div className="an-kpi-val">{analytics?.episodes_rendered ?? '—'}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {analyticsTab === 'formats' && (
+                <div className="an-grid-2">
+                  <div className="an-section">
+                    <div className="an-section-h">
+                      <h3>Shorts · реакция зрителей</h3>
+                      <span>Stayed % (продолжили смотреть)</span>
+                    </div>
+                    <div className="an-section-b">
+                      {(analytics?.shorts_battle || []).length === 0 && (
+                        <div className="an-empty">Нет Shorts с deep-метриками (≥24ч после публикации)</div>
+                      )}
+                      {(analytics?.shorts_battle || []).map((v) => {
+                        const stayed = v.stayed_pct != null ? Number(v.stayed_pct) : null
+                        const avg = v.average_view_percentage != null ? Number(v.average_view_percentage) : null
+                        const cls = stayed == null ? '' : stayed >= 50 ? 'good' : stayed < 40 ? 'bad' : ''
                         return (
-                          <div key={d.date} className="chart-col" title={`${d.date}: ${d.views}`}>
-                            <div className="chart-val">{d.views > 999 ? (d.views/1000).toFixed(1)+'k' : d.views}</div>
-                            <div className="chart-bar" style={{ height: h }} />
-                            <div className="chart-label">{d.date.slice(5)}</div>
+                          <div key={v.episode_id} className="an-battle-row" onClick={() => openAnalyticsVideo(v.episode_id)} style={{ cursor: 'pointer' }}>
+                            <div className="an-battle-title">{v.title || v.episode_id}</div>
+                            <div className="an-battle-meta">
+                              Stayed {stayed != null ? stayed.toFixed(1) + '%' : '—'}
+                              {' · '}досмотр {avg != null ? avg.toFixed(1) + '%' : '—'}
+                              {' · '}{(v.views ?? 0).toLocaleString('ru-RU')} views
+                            </div>
+                            <div className="an-bar-track">
+                              <div className={`an-bar-fill ${cls}`} style={{ width: `${Math.min(100, stayed || 0)}%` }} />
+                            </div>
                           </div>
                         )
                       })}
                     </div>
                   </div>
+
+                  <div className="an-section">
+                    <div className="an-section-h">
+                      <h3>Long · охват</h3>
+                      <span>CTR превью и средний просмотр</span>
+                    </div>
+                    <div className="an-section-b">
+                      {(analytics?.longs_reach || []).length === 0 && (
+                        <div className="an-empty">Нет Longs или bulk reach ещё не готов</div>
+                      )}
+                      {(analytics?.longs_reach || []).map((v) => (
+                        <div key={v.episode_id} className="an-battle-row" onClick={() => openAnalyticsVideo(v.episode_id)} style={{ cursor: 'pointer' }}>
+                          <div className="an-battle-title">{v.title || v.episode_id}</div>
+                          <div className="an-battle-meta">
+                            CTR {v.impressions_ctr != null ? Number(v.impressions_ctr).toFixed(2) + '%' : '—'}
+                            {' · '}AVD {v.avg_view_duration_sec != null ? Math.round(v.avg_view_duration_sec) + 's' : '—'}
+                            {' · '}{(v.views ?? 0).toLocaleString('ru-RU')} views
+                          </div>
+                          <div className="an-bar-track">
+                            <div className="an-bar-fill" style={{ width: `${Math.min(100, (Number(v.impressions_ctr) || 0) * 5)}%` }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
 
-              <div className="panel">
-                <div className="panel-h">Видео</div>
-                <div className="panel-b" style={{ padding: 0 }}>
-                  <table className="analytics-table">
-                    <thead>
-                      <tr>
-                        <th>Название</th>
-                        <th>Канал</th>
-                        <th>Views</th>
-                        <th>Likes</th>
-                        <th>Comments</th>
-                        <th>В общей</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(analytics?.all_videos || analytics?.top_videos || []).map((v) => (
-                        <tr key={v.episode_id} className={!v.include_in_aggregate ? 'row-muted' : ''}>
-                          <td>
-                            <button className="linkish" onClick={() => openAnalyticsVideo(v.episode_id)}>
-                              {v.title}
-                            </button>
-                          </td>
-                          <td className="muted">{v.channel_name}</td>
-                          <td>{v.views}</td>
-                          <td>{v.likes}</td>
-                          <td>{v.comments}</td>
-                          <td>
-                            <button
-                              className={`chip ${v.include_in_aggregate ? 'active' : ''}`}
-                              onClick={() => toggleAggregate(v.episode_id, !v.include_in_aggregate)}
-                            >
-                              {v.include_in_aggregate ? 'да' : 'нет'}
-                            </button>
-                          </td>
-                          <td>
-                            <button className="btn btn-sm btn-ghost" onClick={() => openAnalyticsVideo(v.episode_id)}>Подробнее</button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {(analytics?.all_videos || analytics?.top_videos || []).length === 0 && (
-                    <div className="empty">Нет данных — привяжи YouTube и сделай синк</div>
-                  )}
-                </div>
-              </div>
-
-              {analyticsVideo && (
-                <div className="panel" style={{ marginTop: 16 }}>
-                  <div className="panel-h">
-                    <span>{analyticsVideo.display?.title || analyticsVideo.episode?.title}</span>
-                    <button className="btn btn-ghost btn-sm" onClick={() => setAnalyticsVideo(null)}>Закрыть</button>
+              {analyticsTab === 'ranking' && (
+                <div className="an-section">
+                  <div className="an-section-h">
+                    <h3>Рейтинг эпизодов</h3>
+                    <span>Клик по строке — детали ролика</span>
                   </div>
-                  <div className="panel-b">
-                    <div className="stats" style={{ marginBottom: 16 }}>
-                      <div className="stat"><div className="stat-val">{(analyticsVideo.history?.slice(-1)[0] || {}).views ?? '—'}</div><div className="stat-label">Просмотры</div></div>
-                      <div className="stat"><div className="stat-val">{(analyticsVideo.history?.slice(-1)[0] || {}).likes ?? '—'}</div><div className="stat-label">Лайки</div></div>
-                      <div className="stat"><div className="stat-val">{(analyticsVideo.history?.slice(-1)[0] || {}).comments ?? '—'}</div><div className="stat-label">Комменты</div></div>
-                      <div className="stat"><div className="stat-val">{analyticsVideo.display?.duration_sec ? Math.round(analyticsVideo.display.duration_sec)+'s' : '—'}</div><div className="stat-label">Длительность</div></div>
-                      <div className="stat"><div className="stat-val">{(analyticsVideo.history?.slice(-1)[0] || {}).avg_view_duration_sec != null ? Math.round((analyticsVideo.history.slice(-1)[0].avg_view_duration_sec))+'s' : '—'}</div><div className="stat-label">Ср. просмотр</div></div>
-                      <div className="stat"><div className="stat-val">{(analyticsVideo.history?.slice(-1)[0] || {}).average_view_percentage != null ? Number(analyticsVideo.history.slice(-1)[0].average_view_percentage).toFixed(1)+'%' : '—'}</div><div className="stat-label">% досмотра</div></div>
-                      <div className="stat"><div className="stat-val">{(analyticsVideo.history?.slice(-1)[0] || {}).swipe_away_pct != null ? Number(analyticsVideo.history.slice(-1)[0].swipe_away_pct).toFixed(1)+'%' : '—'}</div><div className="stat-label">Swipe away</div></div>
-                    </div>
-                    <div className="row" style={{ marginBottom: 12 }}>
-                      <span className="muted">YouTube:</span>
-                      {analyticsVideo.display?.youtube_url ? (
-                        <a href={analyticsVideo.display.youtube_url} target="_blank" rel="noreferrer">{analyticsVideo.display.youtube_id}</a>
-                      ) : 'не привязан'}
-                      <span className="muted">· privacy: {analyticsVideo.meta?.privacy || '—'}</span>
-                      <span className="muted">· published: {analyticsVideo.meta?.published_at || '—'}</span>
-                      <span className="muted">· available: {String(analyticsVideo.status?.available)}</span>
-                    </div>
-                    <div className="row" style={{ marginBottom: 16 }}>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => toggleAggregate(analyticsVideo.episode.id, !analyticsVideo.include_in_aggregate)}
-                      >
-                        {analyticsVideo.include_in_aggregate ? 'Исключить из общей статистики' : 'Вернуть в общую статистику'}
-                      </button>
-                      {analyticsVideo.episode?.youtube_id && (
-                        <button className="btn btn-primary btn-sm" disabled={ytBusy} onClick={async () => {
-                          await syncYoutube(analyticsVideo.episode)
-                          openAnalyticsVideo(analyticsVideo.episode.id)
-                        }}>Обновить с YouTube</button>
-                      )}
-                    </div>
-                    {(analyticsVideo.history || []).length > 0 ? (
-                      <div className="chart-bars">
-                        {analyticsVideo.history.map((h, idx) => {
-                          const max = Math.max(...analyticsVideo.history.map((x) => x.views || 0), 1)
-                          const hgt = Math.max(6, Math.round(((h.views || 0) / max) * 140))
+                  <div className="an-section-b an-table-wrap">
+                    <table className="an-table">
+                      <thead>
+                        <tr>
+                          <th>Название</th>
+                          <th>Формат</th>
+                          <th>Длит.</th>
+                          <th>Просмотры</th>
+                          <th>Stayed</th>
+                          <th>Досмотр</th>
+                          <th>Лайки</th>
+                          <th>Комменты</th>
+                          <th>Статус</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(analytics?.ranking || analytics?.all_videos || []).map((v) => {
+                          const stayed = v.stayed_pct
+                          const pctCls = stayed >= 50 ? 'an-pct-good' : (stayed != null && stayed < 40 ? 'an-pct-bad' : '')
+                          const kind = (v.kind || '').includes('short') ? 'shorts' : 'longs'
                           return (
-                            <div key={idx} className="chart-col" title={`${h.date || h.ts}: ${h.views} views`}>
-                              <div className="chart-val">{h.views}</div>
-                              <div className="chart-bar" style={{ height: hgt }} />
-                              <div className="chart-label">{(h.date || '').slice(5) || idx}</div>
-                            </div>
+                            <tr key={v.episode_id || v.id} onClick={() => openAnalyticsVideo(v.episode_id || v.id)}>
+                              <td style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.title}</td>
+                              <td><span className={`an-tag ${kind}`}>{kind === 'shorts' ? 'Shorts' : 'Long'}</span></td>
+                              <td>{v.duration_sec != null ? Math.round(v.duration_sec) + 's' : '—'}</td>
+                              <td>{v.views != null ? Number(v.views).toLocaleString('ru-RU') : '—'}</td>
+                              <td className={pctCls}>{stayed != null ? Number(stayed).toFixed(1) + '%' : '—'}</td>
+                              <td>{v.average_view_percentage != null ? Number(v.average_view_percentage).toFixed(1) + '%' : '—'}</td>
+                              <td>{v.likes ?? '—'}</td>
+                              <td>{v.comments ?? '—'}</td>
+                              <td>{v.status || '—'}</td>
+                            </tr>
                           )
                         })}
-                      </div>
-                    ) : (
-                      <div className="muted">Истории синка пока нет</div>
-                    )}
-                    {analyticsVideo.display?.description && (
-                      <div style={{ marginTop: 16 }}>
-                        <div className="muted" style={{ marginBottom: 6 }}>Описание</div>
-                        <pre className="desc-block">{analyticsVideo.display.description}</pre>
-                      </div>
+                      </tbody>
+                    </table>
+                    {(analytics?.ranking || analytics?.all_videos || []).length === 0 && (
+                      <div className="an-empty">Пока пусто — привяжи ролики и сделай синк</div>
                     )}
                   </div>
                 </div>
               )}
-            </>
+
+              {analyticsVideo && (
+                <div className="an-detail">
+                  <div className="an-detail-h">
+                    <strong>{analyticsVideo.display?.title || analyticsVideo.episode?.title}</strong>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setAnalyticsVideo(null)}>Закрыть</button>
+                  </div>
+                  <div className="an-kpi-grid">
+                    <div className="an-kpi">
+                      <div className="an-kpi-label">Просмотры</div>
+                      <div className="an-kpi-val">{(analyticsVideo.history?.slice(-1)[0] || {}).views ?? '—'}</div>
+                    </div>
+                    <div className="an-kpi good">
+                      <div className="an-kpi-label">Продолжили смотреть</div>
+                      <div className="an-kpi-val">
+                        {(analyticsVideo.history?.slice(-1)[0] || {}).stayed_pct != null
+                          ? Number(analyticsVideo.history.slice(-1)[0].stayed_pct).toFixed(1) + '%'
+                          : '—'}
+                      </div>
+                    </div>
+                    <div className="an-kpi warn">
+                      <div className="an-kpi-label">Не стали смотреть</div>
+                      <div className="an-kpi-val">
+                        {(analyticsVideo.history?.slice(-1)[0] || {}).swipe_away_pct != null
+                          ? Number(analyticsVideo.history.slice(-1)[0].swipe_away_pct).toFixed(1) + '%'
+                          : '—'}
+                      </div>
+                    </div>
+                    <div className="an-kpi">
+                      <div className="an-kpi-label">Ср. просмотр</div>
+                      <div className="an-kpi-val">
+                        {(analyticsVideo.history?.slice(-1)[0] || {}).avg_view_duration_sec != null
+                          ? Math.round(analyticsVideo.history.slice(-1)[0].avg_view_duration_sec) + 's'
+                          : '—'}
+                      </div>
+                    </div>
+                  </div>
+                  {analyticsVideo.episode?.youtube_id && (
+                    <button className="btn btn-primary btn-sm" style={{ marginTop: 14 }} onClick={async () => {
+                      await syncYoutube(analyticsVideo.episode)
+                      openAnalyticsVideo(analyticsVideo.episode.id)
+                    }}>Обновить ролик</button>
+                  )}
+                </div>
+              )}
+            </div>
           )}
 
-{page === 'system' && (
+          {page === 'system' && (
             <>
               <div className="page-title">Система</div>
-              <div className="page-sub">Проверка окружения, OAuth YouTube, база данных</div>
+              <div className="page-sub">Только подключение YouTube и проверка окружения</div>
 
               <div className="panel" style={{ marginBottom: 16 }}>
-                <div className="panel-h">YouTube Studio OAuth</div>
+                <div className="panel-h">YouTube · OAuth</div>
                 <div className="panel-b">
                   <p className="muted" style={{ marginBottom: 10 }}>
-                    Для среднего времени просмотра, % досмотра, shares и подписчиков.
-                    OAuth Web client в Google Cloud, redirect:
-                    <code> http://127.0.0.1:5050/api/oauth/youtube/callback</code>
-                    Ключи в <code>web/youtube_oauth.json</code>
+                    Подключи Google-аккаунт канала. После этого Контент и Аналитика подтягивают ролики и метрики сами.
                   </p>
                   <div className="row" style={{ marginBottom: 8 }}>
                     <button className="btn btn-ghost btn-sm" onClick={loadOauthStatus}>Обновить статус</button>
                     {oauthStatus?.connected ? (
-                      <button className="btn btn-danger btn-sm" onClick={disconnectYoutubeOauth}>Отключить</button>
+                      <>
+                        <button className="btn btn-primary btn-sm" disabled={ytBusy} onClick={async () => {
+                          setYtBusy(true)
+                          try {
+                            const r = await api('/oauth/youtube/import-channel?max_videos=100', { method: 'POST' })
+                            notify(`Импорт: +${r.created || 0} новых, ${r.synced || 0} обновлено`)
+                            loadEpisodes()
+                          } catch (e) { notify(e.message, true) }
+                          finally { setYtBusy(false) }
+                        }}>{ytBusy ? 'Импорт…' : 'Импорт роликов с YouTube'}</button>
+                        <button className="btn btn-ghost btn-sm" disabled={ytBusy} onClick={async () => {
+                          setYtBusy(true)
+                          try {
+                            const r = await api('/youtube/dedupe?delete_folders=true', { method: 'POST' })
+                            notify(`Дубликаты: удалено ${r.removed || 0}`)
+                            loadEpisodes()
+                          } catch (e) { notify(e.message, true) }
+                          finally { setYtBusy(false) }
+                        }}>Удалить дубликаты</button>
+                        <button className="btn btn-danger btn-sm" onClick={disconnectYoutubeOauth}>Отключить</button>
+                      </>
                     ) : (
                       <button className="btn btn-primary btn-sm" onClick={connectYoutubeOauth}>Подключить Google</button>
                     )}
@@ -1196,115 +1493,62 @@ export default function App()
                     {oauthStatus && !oauthStatus.configured && (
                       <span style={{ color: 'var(--red)' }}>Не настроен client: {oauthStatus.error}</span>
                     )}
-                    {oauthStatus?.configured && !oauthStatus.connected && 'Client есть — аккаунт не подключён'}
+                    {oauthStatus?.configured && !oauthStatus.connected && 'Client есть — аккаунт ещё не подключён'}
                     {oauthStatus?.connected && (
                       <span style={{ color: 'var(--green)' }}>
-                        Подключено: {oauthStatus.channel_title || oauthStatus.channel_id}
+                        Подключено{oauthStatus.channel_title ? `: ${oauthStatus.channel_title}` : ''}
                       </span>
                     )}
                   </div>
                 </div>
               </div>
 
-              <div className="row" style={{ marginBottom: 16 }}>
-                <button className="btn btn-ghost" onClick={runDoctor}>Проверить</button>
-                <button className="btn btn-ghost" onClick={runMigrate}>Импорт из channels/</button>
-                <button className="btn btn-primary" onClick={async () => {
-                  try {
-                    const r = await api('/fix-titles', { method: 'POST' })
-                    notify('Названия обновлены: ' + r.fixed)
-                    loadEpisodes()
-                  } catch (e) { notify(e.message, true) }
-                }}>Исправить названия</button>
-                <button className="btn btn-ghost" onClick={async () => {
-                  try {
-                    const r = await api('/regenerate-thumbs', { method: 'POST' })
-                    notify('Превью: ' + r.thumbs)
-                    loadEpisodes()
-                  } catch (e) { notify(e.message, true) }
-                }}>Проверить превью-файлы</button>
-              </div>
-              {doctor && (
-                <div className="panel">
-                  <div className="panel-h">
-                    Статус:{' '}
-                    <span style={{ color: doctor.ok ? 'var(--green)' : 'var(--red)' }}>
-                      {doctor.ok ? 'OK' : 'Есть проблемы'}
-                    </span>
-                  </div>
-                  <div className="panel-b">
-                    {doctor.issues?.length > 0 && (
-                      <ul style={{ marginBottom: 12, paddingLeft: 18, color: 'var(--red)' }}>
-                        {doctor.issues.map((x, i) => (
-                          <li key={i}>{x}</li>
-                        ))}
-                      </ul>
-                    )}
-                    <pre style={{ fontSize: 12, overflow: 'auto' }}>{JSON.stringify(doctor.info, null, 2)}</pre>
+              <div className="panel" style={{ marginBottom: 16 }}>
+                <div className="panel-h">Обслуживание (редко нужно)</div>
+                <div className="panel-b">
+                  <p className="muted" style={{ marginBottom: 10 }}>
+                    Служебные действия с локальными папками и базой. Не относится к OAuth.
+                  </p>
+                  <div className="row">
+                    <button className="btn btn-ghost btn-sm" onClick={runDoctor}>Проверить окружение</button>
+                    <button className="btn btn-ghost btn-sm" onClick={runMigrate} title="Старые папки → storage">Импорт из папок</button>
+                    <button className="btn btn-ghost btn-sm" onClick={async () => {
+                      try {
+                        const r = await api('/fix-titles', { method: 'POST' })
+                        notify(r.fixed != null ? `Исправлено названий: ${r.fixed}` : 'Названия обновлены')
+                        loadEpisodes()
+                      } catch (e) { notify(e.message, true) }
+                    }}>Исправить названия</button>
+                    <button className="btn btn-ghost btn-sm" onClick={async () => {
+                      try {
+                        const eps = await api('/episodes')
+                        const missing = (eps || []).filter((e) => !e.has_preview && !e.has_thumb)
+                        notify(missing.length ? `Без превью: ${missing.length} роликов` : 'Превью есть у всех роликов')
+                      } catch (e) { notify(e.message, true) }
+                    }}>Проверить превью</button>
                   </div>
                 </div>
-              )}
+              </div>
+
+              <div className="panel">
+                <div className="panel-h">
+                  <span>Статус окружения</span>
+                  <span className="muted">{doctor?.ok === false ? 'есть проблемы' : doctor ? 'OK' : '—'}</span>
+                </div>
+                <div className="panel-b">
+                  {doctor ? (
+                    <pre className="desc-block" style={{ maxHeight: 280 }}>{JSON.stringify(doctor, null, 2)}</pre>
+                  ) : (
+                    <div className="muted">Нажми «Проверить окружение», чтобы увидеть версии MoviePy, ffmpeg и т.д.</div>
+                  )}
+                </div>
+              </div>
             </>
           )}
-        </div>
 
-        {/* bottom bar removed — use «Рендеры» tab + theater */}
-      </div>
-
-      {showNewChannel && (
-        <Modal
-          title="Новый канал"
-          onClose={() => setShowNewChannel(false)}
-          footer={
-            <>
-              <button className="btn btn-ghost" onClick={() => setShowNewChannel(false)}>Отмена</button>
-              <button className="btn btn-primary" onClick={createChannel}>Создать</button>
-            </>
-          }
-        >
-          <div className="field">
-            <label>Название</label>
-            <input value={newChannelName} onChange={(e) => setNewChannelName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && createChannel()} autoFocus placeholder="например zuppy" />
-          </div>
-        </Modal>
-      )}
-
-      {showNewEpisode && (
-        <Modal
-          title="Новое видео"
-          onClose={() => setShowNewEpisode(false)}
-          footer={
-            <>
-              <button className="btn btn-ghost" onClick={() => setShowNewEpisode(false)}>Отмена</button>
-              <button className="btn btn-primary" onClick={createEpisode}>Создать</button>
-            </>
-          }
-        >
-          <div className="field">
-            <label>Канал</label>
-            <select value={newEpChannel || ''} onChange={(e) => setNewEpChannel(Number(e.target.value))}>
-              {channels.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label>Тип</label>
-            <select value={newEpKind} onChange={(e) => setNewEpKind(e.target.value)}>
-              <option value="shorts">Shorts</option>
-              <option value="long">Long</option>
-            </select>
-          </div>
-          <div className="field">
-            <label>Название</label>
-            <input value={newEpTitle} onChange={(e) => setNewEpTitle(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && createEpisode()} autoFocus placeholder="Stopped Clock Illusion" />
-          </div>
-        </Modal>
-      )}
-
-      {showTheater && activeJobId && (
+{showTheater && activeJobId && (
         <RenderTheater
-          job={jobs.find((j) => j.id === activeJobId) || { id: activeJobId, status: 'running', log: [], preview }}
+          job={jobs.find((j) => Number(j.id) === Number(activeJobId)) || { id: activeJobId, status: 'running', log: [], preview: !!preview }}
           episodeTitle={renderTitle}
           mode={theaterMode}
           onMode={setTheaterMode}

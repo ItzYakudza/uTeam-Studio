@@ -16,6 +16,21 @@ QoL:
 
 import os
 import sys
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+
+# Repo root (parent of YouTube/) so `import core` works after core/ moved to root
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+YT_ROOT = Path(__file__).resolve().parent
+if str(YT_ROOT) not in sys.path:
+    sys.path.insert(0, str(YT_ROOT))
 import shutil
 import argparse
 import importlib.util
@@ -33,6 +48,16 @@ LAST_FILE = ROOT / ".last_episode"
 # ============================================================
 # Output helpers
 # ============================================================
+
+
+def _safe_print(*args, **kwargs):
+    """Print that never crashes on Windows legacy code pages."""
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        text = " ".join(str(a) for a in args)
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        sys.stdout.buffer.write((text + "\n").encode(enc, errors="replace"))
 
 class StudioError(Exception):
     def __init__(self, message: str, hint: str = None):
@@ -72,14 +97,14 @@ def info(msg: str):
 def list_channels(silent=False):
     if not CHANNELS.exists():
         if not silent:
-            print("Нет каналов.")
+            _safe_print("Нет каналов.")
         return []
     chans = sorted([p.name for p in CHANNELS.iterdir() if p.is_dir()])
     if not silent:
         if not chans:
-            print("Нет каналов.")
+            _safe_print("Нет каналов.")
         else:
-            print("Каналы:")
+            _safe_print("Каналы:")
             for i, name in enumerate(chans, 1):
                 shorts = list((CHANNELS / name / "videos" / "shorts").glob("*")) if (CHANNELS / name / "videos" / "shorts").exists() else []
                 longs = list((CHANNELS / name / "videos" / "longs").glob("*")) if (CHANNELS / name / "videos" / "longs").exists() else []
@@ -92,7 +117,7 @@ def pick_channel():
     if not chans:
         return None
     if len(chans) == 1:
-        print(f"Канал: {chans[0]}")
+        _safe_print(f"Канал: {chans[0]}")
         return chans[0]
     raw = input("Номер или имя канала: ").strip()
     if raw.isdigit():
@@ -143,9 +168,9 @@ def status_icons(st: dict) -> str:
 def pick_episode(channel: str):
     eps = list_episodes(channel)
     if not eps:
-        print("Нет эпизодов.")
+        _safe_print("Нет эпизодов.")
         return None
-    print("Эпизоды:  (S=scenes  V=voice  B=build  M=meta)")
+    _safe_print("Эпизоды:  (S=scenes  V=voice  B=build  M=meta)")
     for i, (k, p) in enumerate(eps, 1):
         st = episode_status(p)
         print(f"  {i}. [{k}] [{status_icons(st)}] {p.name}")
@@ -196,7 +221,7 @@ def delete_channel(name: str):
         shutil.rmtree(path)
         ok(f"Канал удалён: {name}")
     else:
-        print("Отменено.")
+        _safe_print("Отменено.")
 
 
 def delete_episode(ep_path: Path):
@@ -208,7 +233,7 @@ def delete_episode(ep_path: Path):
         shutil.rmtree(ep_path)
         ok(f"Эпизод удалён: {ep_path.name}")
     else:
-        print("Отменено.")
+        _safe_print("Отменено.")
 
 
 def next_index(folder: Path) -> int:
@@ -352,10 +377,10 @@ def show_episode_info(ep_path: Path):
     st = episode_status(ep_path)
     print()
     print(f"=== {ep_path.name} ===")
-    print(f"Путь:      {ep_path}")
+    _safe_print(f"Путь:      {ep_path}")
     print(f"scenes.py: {'yes' if st['scenes'] else 'NO'}")
     print(f"script.txt:{'yes' if st['script'] else 'NO'}")
-    print(f"voiceover: {'yes' if st['voice'] else 'NO  <- озвучь script.txt'}")
+    _safe_print(f"voiceover: {'yes' if st['voice'] else 'NO  <- озвучь script.txt'}")
     print(f"build mp4: {'yes' if st['build'] else 'NO'}")
     print(f"meta:      {'yes' if st['meta'] else 'NO'}")
     print(f"sheet:     {'yes' if st['sheet'] else 'NO'}")
@@ -364,8 +389,8 @@ def show_episode_info(ep_path: Path):
             ep = load_module(str(ep_path / "scenes.py"))
             print(f"MODE:      {getattr(ep, 'MODE', '?')}")
             print(f"TITLE:     {getattr(ep, 'TITLE', '?')}")
-            print(f"Сцен:      {len(getattr(ep, 'SCENES', []))}")
-            print(f"Текстов:   {len(getattr(ep, 'TEXTS', []))}")
+            _safe_print(f"Сцен:      {len(getattr(ep, 'SCENES', []))}")
+            _safe_print(f"Текстов:   {len(getattr(ep, 'TEXTS', []))}")
         except Exception as e:
             warn(f"Не удалось прочитать scenes.py: {e}")
     print()
@@ -393,7 +418,7 @@ def clean_episode(ep_path: Path, keep_build: bool = False):
     if removed:
         ok(f"Очищено: {', '.join(removed)}")
     else:
-        print("Нечего чистить.")
+        _safe_print("Нечего чистить.")
 
 
 def doctor():
@@ -557,7 +582,7 @@ def render(ep_dir, preview: bool = False, channel_override: str = None, quiet: b
     print("=" * 50)
     print(f"  uTeam-Studio  |  {cfg.name}  {cfg.out_width}x{cfg.out_height} @{cfg.fps}fps")
     print(f"  preview={preview}  channel={channel}")
-    print(f"  эпизод: {ep_dir.name}")
+    _safe_print(f"  эпизод: {ep_dir.name}")
     print("=" * 50)
 
     source_dir = ep_dir / "source"
@@ -566,7 +591,7 @@ def render(ep_dir, preview: bool = False, channel_override: str = None, quiet: b
     build_dir.mkdir(exist_ok=True)
 
     try:
-        print("[1/4] Подготовка голоса...")
+        _safe_print("[1/4] Подготовка голоса...")
         sync = prepare_voice(str(voice_path), texts, cfg, work_dir=str(source_dir))
     except Exception as e:
         err(f"Ошибка подготовки голоса: {type(e).__name__}: {e}", "Проверь voiceover.mp3 и TEXTS")
@@ -574,7 +599,7 @@ def render(ep_dir, preview: bool = False, channel_override: str = None, quiet: b
             traceback.print_exc()
         return False
 
-    print("[1b] Валидация...")
+    _safe_print("[1b] Валидация...")
     try:
         validate_scenes(scenes, texts, cfg, sync.starts, sync.durs, sync.total, mode=mode)
     except ValidationError as e:
@@ -613,9 +638,9 @@ def render(ep_dir, preview: bool = False, channel_override: str = None, quiet: b
     print()
     print("=" * 50)
     print(f"  DONE")
-    print(f"  Видео:   {out_path}")
+    _safe_print(f"  Видео:   {out_path}")
     print(f"  Meta:    {meta_path}")
-    print(f"  Длит.:   {sync.total:.1f}s")
+    _safe_print(f"  Длит.:   {sync.total:.1f}s")
     print("=" * 50)
     return True
 
@@ -706,20 +731,20 @@ def interactive():
         print("\n=== uTeam-Studio ===")
         if last:
             print(f"  last: {last.name}")
-        print("1. Список каналов")
-        print("2. Создать канал")
-        print("3. Удалить канал")
-        print("4. Создать эпизод")
-        print("5. Удалить эпизод")
-        print("6. Рендер")
+        _safe_print("1. Список каналов")
+        _safe_print("2. Создать канал")
+        _safe_print("3. Удалить канал")
+        _safe_print("4. Создать эпизод")
+        _safe_print("5. Удалить эпизод")
+        _safe_print("6. Рендер")
         print("7. Contact sheet")
-        print("8. Инфо об эпизоде")
-        print("9. Открыть папку эпизода")
-        print("10. Открыть scenes.py в редакторе")
-        print("11. Очистить source/build")
-        print("12. Рендер последнего (last)")
-        print("13. doctor (проверка окружения)")
-        print("0. Выход")
+        _safe_print("8. Инфо об эпизоде")
+        _safe_print("9. Открыть папку эпизода")
+        _safe_print("10. Открыть scenes.py в редакторе")
+        _safe_print("11. Очистить source/build")
+        _safe_print("12. Рендер последнего (last)")
+        _safe_print("13. doctor (проверка окружения)")
+        _safe_print("0. Выход")
         choice = input("> ").strip()
 
         if choice == "1":
@@ -815,11 +840,11 @@ def interactive():
             doctor()
 
         elif choice == "0":
-            print("Выход.")
+            _safe_print("Выход.")
             break
 
         else:
-            print("Неизвестная команда.")
+            _safe_print("Неизвестная команда.")
 
 
 def main():
@@ -907,7 +932,7 @@ def main():
         return
 
     err(f"Неизвестная команда: {args.command}")
-    print("Доступно: render sheet info open edit clean doctor list last")
+    _safe_print("Доступно: render sheet info open edit clean doctor list last")
     sys.exit(1)
 
 
