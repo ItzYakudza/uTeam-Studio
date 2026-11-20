@@ -12,6 +12,7 @@ from typing import Any
 import db as D
 import oauth_youtube as OYT
 import youtube_data as YD
+import worker as W
 
 log = logging.getLogger("uteam.stats")
 FAST_INTERVAL_SEC = 15 * 60
@@ -166,6 +167,13 @@ def sync_slow() -> dict:
             _state["slow_status"] = "waiting_for_oauth"
         _save_state()
         return {"ok": False, "reason": "OAuth not connected", "synced": 0}
+    # Discover newly published channel uploads without running the old full,
+    # slow per-video sync. The fast collector picks them up on its next cycle.
+    try:
+        discovery = W.import_from_oauth(max_videos=100, sync_stats=False)
+        log.info("Channel discovery: %s created, %s linked", discovery.get("created", 0), discovery.get("synced", 0))
+    except Exception as exc:
+        log.warning("Channel discovery failed: %s", exc)
     synced = pending = 0
     failed = []
     now = _now()
