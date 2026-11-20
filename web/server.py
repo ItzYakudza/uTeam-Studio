@@ -35,25 +35,20 @@ import sync_stats as SS
 
 D.init_db()
 
-app = FastAPI(title="uTeam-Studio", version="2.1.0")
-_stats_sync_task: Optional[asyncio.Task] = None
-
-@app.on_event("startup")
-async def start_background_stats_sync():
-    global _stats_sync_task
-    if _stats_sync_task is None or _stats_sync_task.done():
-        _stats_sync_task = asyncio.create_task(SS.background_sync_loop(), name="background_sync_loop")
-
-@app.on_event("shutdown")
-async def stop_background_stats_sync():
-    global _stats_sync_task
-    if _stats_sync_task and not _stats_sync_task.done():
-        _stats_sync_task.cancel()
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    stats_task = asyncio.create_task(SS.background_sync_loop(), name="background_sync_loop")
+    try:
+        yield
+    finally:
+        stats_task.cancel()
         try:
-            await _stats_sync_task
+            await stats_task
         except asyncio.CancelledError:
             pass
-        _stats_sync_task = None
+
+
+app = FastAPI(title="uTeam-Studio", version="2.1.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -119,7 +114,7 @@ async def sync_now():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "2.1.0", "db": str(D.DB_PATH), "storage": str(D.STORAGE)}
+    return {"ok": True, "version": "2.1.1", "db": str(D.DB_PATH), "storage": str(D.STORAGE)}
 
 
 @app.get("/api/doctor")
