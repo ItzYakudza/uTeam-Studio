@@ -44,12 +44,7 @@ META = {
         "#shorts #brain #psychology #memory #neuroscience"
     ),
     "tags": (
-        "doorway effect, why do I forget why I walked into a room, forget why I entered a room, "
-        "memory glitch, everyday brain glitches, brain tricks, psychology facts, neuroscience explained, "
-        "working memory, event segmentation, event boundaries, location updating effect, memory and attention, "
-        "why we forget, human brain, cognitive psychology, science explained, everyday science, "
-        "2d animation, animated explainer, brain facts, memory experiment, doorway memory illusion, "
-        "short science video, psychology shorts, zuppy"
+        "doorway effect, why do I forget why I walked into a room, forget why I entered a room, memory glitch, everyday brain glitches, brain tricks, psychology facts, neuroscience explained, working memory, event segmentation, event boundaries, location updating effect, memory and attention, why we forget, human brain, cognitive psychology, science explained, everyday science, 2d animation, animated explainer, brain facts, memory experiment, doorway memory illusion, psychology shorts, zuppy"
     ),
     "pinned_comment": "What was the last thing you forgot the moment you entered a room?",
 }
