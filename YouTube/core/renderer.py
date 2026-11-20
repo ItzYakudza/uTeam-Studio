@@ -15,6 +15,11 @@ from .audio_sync import SyncResult, make_background_audio
 from . import transitions as _tr
 
 
+class RenderError(RuntimeError):
+    """Raised when video rendering fails."""
+
+
+
 def render_episode(
     scenes: list,
     sync: SyncResult,
@@ -23,6 +28,7 @@ def render_episode(
     channel_name: str = "uTeam",
     work_dir: str = ".",
     transitions=None,
+    quiet: bool = False,
 ) -> str:
     """
     transitions — dict {индекс_сцены: "iris" | "zoom:0.5" | ...} из scenes.py (TRANSITIONS); по умолчанию slide.
