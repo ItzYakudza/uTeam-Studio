@@ -1,6 +1,5 @@
-fastapi>=0.115.0
-uvicorn[standard]>=0.32.0
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.9
 pydantic>=2.0
-# core render deps (same as original project expects):
-# pillow numpy moviepy
-# install them if you actually render videos
+yt-dlp>=2024.1.0

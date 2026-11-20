@@ -1,4 +1,6 @@
 source/
 build/*.mp4
 voiceover.mp3
-__pycache__
+__pycache__/
+**/youtube_oauth.json
+**/studio_oauth_token.json
