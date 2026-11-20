@@ -3,7 +3,6 @@ Episode: 012_tip_of_the_tongue
 Channel: zuppy
 Topic: tip-of-the-tongue state
 """
-
 import math
 from core.toolkit import *
 
@@ -11,17 +10,13 @@ MODE = "shorts"
 CHANNEL_NAME = "zuppy"
 
 TEXTS = [
-    "Ever know a word, but suddenly can't say it?",
-    "It's right there — just out of reach.",
-    "Psychologists call this a tip-of-the-tongue state.",
-    "You may remember its first letter, or how many syllables it has.",
-    "That means part of the word is active, but the sound hasn't fully come back.",
-    "Your memory isn't empty. The retrieval is incomplete.",
-    "What's a word that's stuck on the tip of your tongue right now?",
+    "Ever know a word, but suddenly can't say it? It's right there — just out of reach.",
+    "Psychologists call this a tip-of-the-tongue state. You may remember its first letter, or how many syllables it has.",
+    "That means part of the word is active, but the sound hasn't fully come back. Your memory isn't empty. The retrieval is incomplete.",
+    "What's a word that's stuck on the tip of your tongue right now? Say it in the comments.",
 ]
 
 CHAPTERS = ["The missing word", "Tip-of-the-tongue", "Partial retrieval", "Your turn"]
-
 META = {
     "title": "Why Your Brain Can't Find a Word (Tip-of-the-Tongue)",
     "description": (
@@ -48,7 +43,6 @@ TITLE = META["title"]
 DESC = META["description"]
 TAGS = META["tags"]
 
-# Palette and safe-zone layout
 VIO = (36, 16, 92)
 BG2 = (222, 235, 255)
 BG3 = (255, 239, 215)
@@ -58,69 +52,63 @@ YEL = (255, 205, 40)
 BLUE = (70, 135, 235)
 Y1, Y2 = 790, 862
 
-def thesis(cv, t, T, k, a, b=None, col=WHITE, second=YEL):
-    if not (T[k] <= t < T[k + 1]):
+def thesis(cv, t, T, k, a, b=None):
+    if not (T[k] <= t < T[k+1]):
         return
     cx = cv.cfg.center_x
     sc = pop(t, T[k], 0.18)
     size = fit_safe(cv, a, 56)
     if b:
         size = min(size, fit_safe(cv, b, 56))
-    text(cv, cx, Y1, a, size, col, stroke=6, scale=sc)
+    text(cv, cx, Y1, a, size, WHITE, stroke=6, scale=sc)
     if b:
-        text(cv, cx, Y2, b, size, second, stroke=6, scale=sc)
-
-def word_card(cv, x, y, label, scale=1.0, color=WHITE, ink=INK):
-    rrect(cv, x-185*scale, y-72*scale, x+185*scale, y+72*scale, 22*scale, color, 6)
-    text(cv, x, y, label, fit_safe(cv, label, 54)*scale, ink, stroke=2)
+        text(cv, cx, Y2, b, size, YEL, stroke=6, scale=sc)
 
 def s01(cv, t, T):
-    # First frame is already active: oversized speech bubble and missing word.
     cx = cv.cfg.center_x
     wobble = 5 * math.sin(t * 18)
     rrect(cv, cx-235, 270+wobble, cx+235, 570+wobble, 42, WHITE, 8)
     poly(cv, [(cx+95, 560+wobble), (cx+185, 650+wobble), (cx+165, 555+wobble)], WHITE, 5)
     text(cv, cx, 410, "???", 118, VIO, stroke=4)
-    for i, x in enumerate((cx-190, cx+190)):
-        ell(cv, x, 230, 18+5*math.sin(t*12+i), fill=YEL, w=0)
+    ell(cv, cx-190, 230, 20+5*math.sin(t*12), fill=YEL, w=0)
+    ell(cv, cx+190, 230, 20+5*math.sin(t*12+1), fill=YEL, w=0)
     text(cv, cx, 150, "BRAIN GLITCH", 40, YEL, stroke=3)
     thesis(cv, t, T, 0, "KNOW THE WORD", "CAN'T SAY IT")
     thesis(cv, t, T, 1, "RIGHT THERE…", "OUT OF REACH")
 
 def s02(cv, t, T):
     cx = cv.cfg.center_x
-    # Meaning remains available while the spoken form is incomplete.
     brain(cv, cx, 340, 1.0, 1.0 + 0.035*math.sin(t*7))
-    word_card(cv, cx, 600, "MEANING", 0.82, WHITE, INK)
+    rrect(cv, cx-190, 560, cx+190, 680, 22, WHITE, 5)
+    text(cv, cx, 620, "MEANING", 48, INK)
     if t >= T[1]:
-        arrow(cv, cx, 500, cx, 540, 8, RED, rg(t, T[1]+0.1, T[1]+0.55))
-        word_card(cv, cx, 675, "WORD SOUND  ?", 0.72, (255, 220, 215), RED)
-    thesis(cv, t, T, 2, "TIP-OF-THE-", "TONGUE STATE")
-    thesis(cv, t, T, 3, "FIRST LETTER?", "SYLLABLES?")
+        arrow(cv, cx, 490, cx, 535, 8, RED, rg(t, T[1]+0.1, T[1]+0.55))
+        rrect(cv, cx-190, 690, cx+190, 790, 18, (255, 220, 215), 5)
+        text(cv, cx, 740, "WORD SOUND  ?", 38, RED)
+    thesis(cv, t, T, 0, "TIP-OF-THE-", "TONGUE STATE")
+    thesis(cv, t, T, 1, "FIRST LETTER?", "SYLLABLES?")
 
 def s03(cv, t, T):
     cx = cv.cfg.center_x
-    # A partial signal reaches the word, but the sound-form remains unfinished.
-    rrect(cv, 75, 360, 625, 470, 18, WHITE, 5)
-    for i, (label, col) in enumerate((("MEANING", BLUE), ("SOUND", RED))):
-        yy = 290 + i*240
-        text(cv, cx, yy, label, 38, col, stroke=2)
+    text(cv, cx, 250, "WORD RETRIEVAL", 38, INK)
+    for i, label in enumerate(("MEANING", "SOUND")):
+        yy = 390 + i*210
+        col = BLUE if i == 0 else RED
+        text(cv, cx, yy, label, 36, col)
         for j in range(5):
-            xx = 145 + j*105
-            active = (j < 4) if i == 0 else (j < (2 if t < T[1] else 3))
-            rrect(cv, xx, yy+48, xx+62, yy+95, 8, col if active else (225,225,230), 3)
+            xx = 105 + j*102
+            active = (j < 5) if i == 0 else (j < (2 if t < T[1] else 3))
+            rrect(cv, xx, yy+45, xx+66, yy+100, 8, col if active else (225,225,230), 3)
     if t >= T[1]:
-        text(cv, cx+5, 720, "SIGNAL NOT COMPLETE", 32, RED, stroke=2,
-             scale=pop(t, T[1]+0.1))
-    thesis(cv, t, T, 4, "PART OF THE WORD", "IS ACTIVE")
-    thesis(cv, t, T, 5, "NOT A BLANK", "MEMORY")
+        text(cv, cx, 735, "SIGNAL NOT COMPLETE", 30, RED, stroke=2)
+    thesis(cv, t, T, 0, "PART OF THE WORD", "IS ACTIVE")
+    thesis(cv, t, T, 1, "NOT A BLANK", "MEMORY")
 
 def s04(cv, t, T):
     cx = cv.cfg.center_x
-    # Invite a concrete comment, then visually loop back to the missing word.
     for i, x in enumerate((cx-145, cx, cx+145)):
         k = pop(t, T[0]+i*0.18, 0.22)
-        ell(cv, x, 390, 55*k, fill=(255, 255, 255), w=5)
+        ell(cv, x, 390, 55*k, fill=WHITE, w=5)
         text(cv, x, 390, "?" if i == 1 else "…", 54, RED, scale=k)
     if t < T[1]:
         text(cv, cx, 570, "YOU KNOW THE ONE", 38, INK, stroke=2)
@@ -128,7 +116,8 @@ def s04(cv, t, T):
         rrect(cv, cx-215, 315, cx+215, 490, 30, VIO, 0)
         text(cv, cx, 400, "WHAT WORD?", 58, WHITE, stroke=4,
              scale=1+0.025*math.sin(t*12))
-    thesis(cv, t, T, 6, "WHAT WORD IS", "STUCK RIGHT NOW?")
+    thesis(cv, t, T, 0, "WHAT WORD IS", "STUCK RIGHT NOW?")
+    thesis(cv, t, T, 1, "SAY IT BELOW", "IN THE COMMENTS")
 
 TRANSITIONS = {}
 _FN = {"s01": s01, "s02": s02, "s03": s03, "s04": s04}
