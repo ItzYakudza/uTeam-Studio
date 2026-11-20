@@ -238,8 +238,8 @@ def local_video_duration(ep_path: Path) -> Optional[float]:
             [ffmpeg, "-i", str(videos[0])],
             capture_output=True, text=True, timeout=12
         )
-        output = (result.stderr or "") + "\\n" + (result.stdout or "")
-        match = re.search(r"Duration:\\s*(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)", output)
+        output = (result.stderr or "") + "\n" + (result.stdout or "")
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", output)
         if not match:
             return None
         hours, minutes, seconds = match.groups()
