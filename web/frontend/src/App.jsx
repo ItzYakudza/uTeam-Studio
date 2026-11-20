@@ -81,7 +81,7 @@ function parseStages(job = {}) {
     done: 'done',
   }
   const current = aliases[parsed.current] || (job.status === 'done' ? 'done' : 'prepare')
-  const done = (parsed.done || []).map((stage) => aliases[stage] || stage)
+  const done = Array.from(parsed.done || []).map((stage) => aliases[stage] || stage)
   if (job.status === 'done') done.push('done')
   return { current, done: [...new Set(done)] }
 }
