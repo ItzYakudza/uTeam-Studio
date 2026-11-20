@@ -212,6 +212,8 @@ export default function App()
   const [analytics, setAnalytics] = useState(null)
   const [analyticsVideo, setAnalyticsVideo] = useState(null)
   const [analyticsTab, setAnalyticsTab] = useState('overview') // overview | formats | ranking
+  const [lastSyncAt, setLastSyncAt] = useState(null)
+  const [syncNowBusy, setSyncNowBusy] = useState(false)
   const [channelYtUrl, setChannelYtUrl] = useState('')
   const [oauthStatus, setOauthStatus] = useState(null)
   const [activeJobId, setActiveJobId] = useState(null)
@@ -268,6 +270,45 @@ export default function App()
     loadOauthStatus()
   }, [loadChannels, loadEpisodes, loadJobs])
 
+  // Quietly refresh the sync timestamp and the currently visible dashboard every minute.
+  useEffect(() => {
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const state = await api('/sync-status')
+        if (!cancelled) setLastSyncAt(state.last_sync_at || null)
+      } catch {}
+      if (page === 'analytics') {
+        try {
+          const data = await api('/analytics/dashboard')
+          if (!cancelled) setAnalytics(data)
+        } catch {}
+      } else if (page === 'content') {
+        try { await loadEpisodes() } catch {}
+      }
+    }
+    tick()
+    const timer = setInterval(tick, 60 * 1000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [page, loadEpisodes])
+
+  async function syncNow() {
+    if (syncNowBusy) return
+    setSyncNowBusy(true)
+    try {
+      const result = await api('/sync-now', { method: 'POST' })
+      const state = result.sync || await api('/sync-status')
+      setLastSyncAt(state.last_sync_at || null)
+      if (page === 'analytics') setAnalytics(await api('/analytics/dashboard'))
+      if (page === 'content') await loadEpisodes()
+      notify('Статистика обновлена')
+    } catch (e) {
+      notify(e.message || 'Не удалось обновить статистику', true)
+    } finally {
+      setSyncNowBusy(false)
+    }
+  }
+
   // Content tab: refresh list at most once per minute (not every few seconds)
   useEffect(() => {
     if (page !== 'content' && page !== 'episode') return
@@ -291,66 +332,6 @@ export default function App()
     const t = setInterval(() => loadJobs(), 2000)
     return () => clearInterval(t)
   }, [showTheater, activeJobId, loadJobs])
-
-  // When OAuth is connected: auto-sync from YouTube (content + analytics) without manual clicks.
-  // Runs once shortly after OAuth status is known, then every 10 minutes while the app is open.
-  const autoSyncRef = useRef({ last: 0, inFlight: false })
-  useEffect(() => {
-    if (!oauthStatus?.connected) return
-
-    const runAutoSync = async (force = false) => {
-      const now = Date.now()
-      if (autoSyncRef.current.inFlight) return
-      if (!force && now - autoSyncRef.current.last < 9 * 60 * 1000) return
-      autoSyncRef.current.inFlight = true
-      try {
-        await api('/youtube/sync-all', { method: 'POST' })
-        autoSyncRef.current.last = Date.now()
-        await loadEpisodes()
-        if (page === 'analytics') {
-          try {
-            setAnalytics(await api('/analytics/dashboard'))
-          } catch {}
-        }
-        if (analyticsVideo?.episode?.id) {
-          try {
-            const data = await api(`/episodes/${analyticsVideo.episode.id}/analytics`)
-            setAnalyticsVideo(data)
-          } catch {}
-        }
-      } catch {
-        // silent — worker / next tick will retry
-      } finally {
-        autoSyncRef.current.inFlight = false
-      }
-    }
-
-    // first sync soon after connect / page load
-    const initial = setTimeout(() => runAutoSync(true), 2500)
-    const interval = setInterval(() => runAutoSync(false), 10 * 60 * 1000)
-    return () => {
-      clearTimeout(initial)
-      clearInterval(interval)
-    }
-  }, [oauthStatus?.connected, page, analyticsVideo?.episode?.id, loadEpisodes])
-
-  // While on Analytics page with OAuth — keep summary fresh every 90s (no button)
-  useEffect(() => {
-    if (page !== 'analytics' || !oauthStatus?.connected) return
-    let cancelled = false
-    const tick = async () => {
-      try {
-        const data = await api('/analytics/summary')
-        if (!cancelled) setAnalytics(data)
-      } catch {}
-    }
-    tick()
-    const t = setInterval(tick, 90 * 1000)
-    return () => {
-      cancelled = true
-      clearInterval(t)
-    }
-  }, [page, oauthStatus?.connected])
 
   async function openEpisode(ep) {
     setSelected(ep)
@@ -793,6 +774,12 @@ export default function App()
             </div>
           )}
           <div className="row">
+            <span className="muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }} title={lastSyncAt || 'Синхронизация ещё не выполнялась'}>
+              Последнее обновление: {lastSyncAt ? new Date(lastSyncAt).toLocaleTimeString('ru-RU', { hour12: false }) : '—'}
+            </span>
+            <button className="btn btn-primary btn-sm" onClick={syncNow} disabled={syncNowBusy}>
+              {syncNowBusy ? 'Обновление…' : 'Обновить сейчас'}
+            </button>
             {page === 'content' && (
               <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6 }} title="Низкое качество, быстрее проверить сборку">
                 <input type="checkbox" checked={preview} onChange={(e) => setPreview(e.target.checked)} /> Быстрый превью
