@@ -68,7 +68,7 @@ def _resolve_local_channel_for_oauth() -> Optional[dict]:
     return channels[0]
 
 
-def import_from_oauth(max_videos: int = 100) -> dict:
+def import_from_oauth(max_videos: int = 100, sync_stats: bool = True) -> dict:
     """Pull channel videos via OAuth; create folders for missing ones; sync stats."""
     import oauth_youtube as OYT
 
@@ -130,19 +130,21 @@ def import_from_oauth(max_videos: int = 100) -> dict:
                 failed.append({"video_id": vid, "error": "no episode"})
                 continue
 
-            result = YD.sync_episode_folder(Path(ep["disk_path"]), vid)
-            if result.get("available") and result.get("stats"):
-                s = result["stats"]
-                D.upsert_video_stats(
-                    ep["id"],
-                    s.get("date") or D._now()[:10],
-                    views=s.get("views") or v.get("views") or 0,
-                    likes=s.get("likes") or v.get("likes") or 0,
-                    comments=s.get("comments") or v.get("comments") or 0,
-                    shares=s.get("shares") or 0,
-                    source=s.get("source") or "youtube-oauth",
-                    note="oauth-import",
-                )
+            result = {"stats": {}}
+            if sync_stats:
+                result = YD.sync_episode_folder(Path(ep["disk_path"]), vid)
+                if result.get("available") and result.get("stats"):
+                    s = result["stats"]
+                    D.upsert_video_stats(
+                        ep["id"],
+                        s.get("date") or D._now()[:10],
+                        views=s.get("views") or v.get("views") or 0,
+                        likes=s.get("likes") or v.get("likes") or 0,
+                        comments=s.get("comments") or v.get("comments") or 0,
+                        shares=s.get("shares") or 0,
+                        source=s.get("source") or "youtube-oauth",
+                        note="oauth-import",
+                    )
             row = {
                 "episode_id": ep["id"],
                 "video_id": vid,
