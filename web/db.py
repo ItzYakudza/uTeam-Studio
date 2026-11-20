@@ -1082,13 +1082,19 @@ def import_storage_episodes() -> dict:
                              and any(isinstance(t, ast.Name) and t.id == "META" for t in n.targets)),
                             None,
                         )
-                        if meta_node is not None:
-                            meta = ast.literal_eval(meta_node)
-                            if isinstance(meta, dict):
-                                title = str(meta.get("title") or "")
-                                description = str(meta.get("description") or "")
-                                tags_value = meta.get("tags") or ""
-                                tags = ", ".join(tags_value) if isinstance(tags_value, (list, tuple)) else str(tags_value)
+                        if isinstance(meta_node, ast.Dict):
+                            meta = {}
+                            for key_node, value_node in zip(meta_node.keys, meta_node.values):
+                                try:
+                                    key = ast.literal_eval(key_node)
+                                    if key in ("title", "description", "tags"):
+                                        meta[key] = ast.literal_eval(value_node)
+                                except Exception:
+                                    continue
+                            title = str(meta.get("title") or "")
+                            description = str(meta.get("description") or "")
+                            tags_value = meta.get("tags") or ""
+                            tags = ", ".join(tags_value) if isinstance(tags_value, (list, tuple)) else str(tags_value)
                         if not title:
                             title_node = next(
                                 (n.value for n in tree.body
