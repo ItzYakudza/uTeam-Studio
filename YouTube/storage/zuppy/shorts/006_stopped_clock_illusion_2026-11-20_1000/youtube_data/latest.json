@@ -1,5 +1,5 @@
 {
-  "ts": "2026-11-20T21:06:00+03:00",
+  "ts": "2026-11-20T21:28:35+03:00",
   "date": "2026-11-20",
   "video_id": "k3adePx8OBw",
   "url": "https://www.youtube.com/watch?v=k3adePx8OBw",
@@ -15,7 +15,7 @@
   "source": "youtube-data-api-v3",
   "include_in_aggregate": true,
   "layer": "fast",
-  "age_hours": 1.1,
+  "age_hours": 1.47,
   "studio_skipped": true,
-  "studio_skip_reason": "ролик младше 24ч (1.1h) — только Data API (views/likes ~5 мин). Analytics (ср. просмотр, реакция) после 24ч."
+  "studio_skip_reason": "ролик младше 24ч (1.5h) — только Data API (views/likes ~5 мин). Analytics (ср. просмотр, реакция) после 24ч."
 }
