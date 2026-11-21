@@ -1,7 +1,7 @@
 {
-  "checked_at": "2026-11-20T21:28:36+03:00",
-  "available": false,
-  "ok": false,
-  "error": "Видео не найдено или недоступно",
-  "source": null
+  "checked_at": "2026-11-22T00:39:27+03:00",
+  "available": true,
+  "ok": true,
+  "error": null,
+  "source": "youtube-data-api-v3"
 }
