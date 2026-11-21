@@ -49,121 +49,112 @@ BG1 = (40, 45, 105)
 BG2 = (225, 240, 255)
 BG3 = (255, 235, 190)
 
-Y1 = 620
-Y2 = 692
-
-
 def thesis(cv, t, T, k, l1, l2=None, col=WHITE):
     if not (T[k] <= t < T[k + 1]):
         return
-    sc = pop(t, T[k], 0.18)
+    scale = pop(t, T[k], 0.18)
     sz = fit(l1, 54, 500)
     if l2:
         sz = min(sz, fit(l2, 54, 500))
-    text(cv, 340, Y1, l1, sz, col, stroke=6, scale=sc)
+    text(cv, cv.cfg.center_x, 850, l1, sz, col, stroke=5, scale=scale)
     if l2:
-        text(cv, 340, Y2, l2, sz, col, stroke=6, scale=sc)
+        text(cv, cv.cfg.center_x, 915, l2, sz, col, stroke=5, scale=scale)
 
-
-def coffee_cup(cv, cx, cy, scale=1.0, steam=True, shake=0.0):
-    # Large cup and handle, built only from core primitives.
-    x = cx + shake
-    rrect(cv, x - 125 * scale, cy - 80 * scale, 250 * scale, 240 * scale,
-          18 * scale, WHITE, 6)
-    line(cv, [(x - 105 * scale, cy - 55 * scale), (x + 105 * scale, cy - 55 * scale)],
-         14 * scale, (80, 55, 35))
-    ell(cv, x + 145 * scale, cy + 10 * scale, 55 * scale, 70 * scale, WHITE, 6)
-    ell(cv, x + 145 * scale, cy + 10 * scale, 32 * scale, 47 * scale, BG1, 0)
-    ell(cv, x, cy - 56 * scale, 104 * scale, 20 * scale, (95, 60, 35), 0)
+def cup(cv, x, y, s=1.0, tilt=0.0, steam=True):
+    # Cup body, handle, rim and coffee surface—only existing primitives.
+    x += 5 * math.sin(tilt * 3)
+    rrect(cv, x - 120*s, y - 85*s, x + 120*s, y + 150*s, 26*s, WHITE, 7)
+    ell(cv, x + 145*s, y + 10*s, 55*s, 68*s, WHITE, 6)
+    ell(cv, x + 145*s, y + 10*s, 33*s, 46*s, cv.bg, 0)
+    ell(cv, x, y - 75*s, 105*s, 22*s, (95, 60, 35), 0)
+    line(cv, [(x-90*s,y-50*s),(x+90*s,y-50*s)], 8*s, (125,85,60))
     if steam:
-        for dx, sway in [(-45, 0), (0, 12), (45, -10)]:
-            line(cv, [(x + dx * scale, cy - 130 * scale),
-                      (x + (dx + sway) * scale, cy - 175 * scale),
-                      (x + (dx - sway) * scale, cy - 215 * scale)],
-                 8 * scale, WHITE)
+        for i, dx in enumerate((-55,0,55)):
+            sway = math.sin(tilt*2.5+i)*20*s
+            line(cv, [(x+dx*s,y-130*s),(x+(dx+18)*s+sway,y-175*s),
+                      (x+(dx-12)*s-sway,y-220*s)], 7*s, WHITE)
 
+def molecule(cv, x, y, s=1.0, rotation=0.0, fill=(155,185,245)):
+    # Adenosine symbol assembled from a central dot and orbiting circles.
+    ell(cv,x,y,46*s,46*s,fill,5)
+    text(cv,x,y,"A",48*s,INK,stroke=1)
+    for i in range(6):
+        a=rotation+i*math.tau/6
+        px=x+math.cos(a)*78*s
+        py=y+math.sin(a)*78*s
+        line(cv,[(x+math.cos(a)*38*s,y+math.sin(a)*38*s),(px,py)],5*s,fill)
+        ell(cv,px,py,17*s,17*s,fill,3)
 
-def adenosine(cv, cx, cy, scale=1.0, blocked=False):
-    # Sleep signal molecule, with simple receptor marks.
-    ell(cv, cx, cy, 105 * scale, 105 * scale, (155, 185, 245), 6)
-    text(cv, cx, cy, "A", 76 * scale, INK, stroke=2)
-    for a in range(0, 360, 45):
-        rad = math.radians(a)
-        px, py = cx + 130 * scale * math.cos(rad), cy + 130 * scale * math.sin(rad)
-        ell(cv, px, py, 15 * scale, 15 * scale, (105, 140, 210), 0)
-    if blocked:
-        line(cv, [(cx - 150 * scale, cy - 150 * scale),
-                  (cx + 150 * scale, cy + 150 * scale)], 18 * scale, RED)
-        line(cv, [(cx - 150 * scale, cy + 150 * scale),
-                  (cx + 150 * scale, cy - 150 * scale)], 18 * scale, RED)
-
-
-def receptor(cv, cx, cy, scale=1.0, occupied=False):
-    # Receptor as a U-shaped docking slot.
-    line(cv, [(cx - 65 * scale, cy - 70 * scale),
-              (cx - 65 * scale, cy + 70 * scale),
-              (cx, cy + 110 * scale),
-              (cx + 65 * scale, cy + 70 * scale),
-              (cx + 65 * scale, cy - 70 * scale)], 18 * scale, INK)
+def lock(cv, x, y, s=1.0, open_=False, occupied=False):
+    # Receptor as an open docking pocket.
+    line(cv,[(x-58*s,y-55*s),(x-58*s,y+45*s),(x,y+88*s),
+              (x+58*s,y+45*s),(x+58*s,y-55*s)],14*s,INK)
     if occupied:
-        ell(cv, cx, cy - 20 * scale, 55 * scale, 55 * scale, YEL, 5)
-        text(cv, cx, cy - 20 * scale, "C", 48 * scale, INK, stroke=1)
+        ell(cv,x,y-16*s,43*s,43*s,YEL,4)
+        text(cv,x,y-16*s,"C",38*s,INK,stroke=1)
+    if open_:
+        line(cv,[(x+58*s,y-55*s),(x+105*s,y-90*s)],12*s,RED)
 
+def s01(cv,t,T):
+    # Hook frame: sleepy character beside an oversized, pulsing coffee cup.
+    pulse=1+0.025*math.sin(24*t)
+    cup(cv,205,390,0.88*pulse,tilt=math.sin(18*t),steam=True)
+    person(cv,500,690,1.45,shirt=(245,195,80),mood="tired",L=(-70,20),R=(80,-35))
+    text(cv,350,165,"NO ENERGY IN COFFEE?",56,WHITE,stroke=5,scale=1+0.02*math.sin(20*t))
+    # Adenosine begins accumulating as the character stays awake.
+    if t>=T[1]:
+        n=max(1,int(2+5*rg(t,T[1],T[2])))
+        for i in range(n):
+            a=t*1.4+i*math.tau/n
+            molecule(cv,350+math.cos(a)*170,360+math.sin(a)*110,0.34,rotation=a)
+    if t>=T[2]:
+        text(cv,350,500,"SLEEP PRESSURE BUILS",40,YEL,stroke=4,scale=pop(t,T[2],0.18))
+    thesis(cv,t,T,0,"COFFEE ≠ ENERGY")
+    thesis(cv,t,T,1,"ADENOSINE BUILDS")
+    thesis(cv,t,T,2,"SLEEP PRESSURE RISES")
 
-def s01(cv, t, T):
-    # Immediate hook frame: coffee cup + high-contrast alert visual already on screen.
-    pulse = 1 + 0.04 * math.sin(26 * t)
-    coffee_cup(cv, 340, 360, 0.95 * pulse, steam=True, shake=5 * math.sin(42 * t))
-    text(cv, 340, 170, "NO ENERGY?", 58, WHITE, stroke=6)
-    text(cv, 340, 445, "STILL AWAKE", 54, YEL, stroke=6, scale=1 + 0.03 * math.sin(22 * t))
-    if t >= T[1]:
-        adenosine(cv, 150, 275, 0.62 * pop(t, T[1] + 0.1))
-        text(cv, 150, 150, "ADENOSINE", 38, WHITE, stroke=4, scale=pop(t, T[1] + 0.2))
-    if t >= T[2]:
-        receptor(cv, 520, 290, 0.7 * pop(t, T[2] + 0.05), occupied=True)
-        text(cv, 520, 155, "BLOCKED", 42, YEL, stroke=5, scale=pop(t, T[2] + 0.1))
-    thesis(cv, t, T, 0, "COFFEE WAKES", "WITHOUT ENERGY")
-    thesis(cv, t, T, 1, "SLEEP SIGNAL", "BUILDS UP")
-    thesis(cv, t, T, 2, "CAFFEINE BLOCKS", "THE SIGNAL")
+def s02(cv,t,T):
+    rrect(cv,-20,-20,740,1300,1,BG2,0)
+    # The molecule approaches its receptor, then caffeine occupies the docking site.
+    x=190+230*rg(t,T[0],T[1])
+    molecule(cv,x,355,0.78,rotation=t*0.7)
+    lock(cv,505,355,1.0,occupied=False)
+    text(cv,350,160,"THE SIGNAL GETS BLOCKED",48,INK,stroke=4)
+    if t>=T[1]:
+        # Caffeine is the blocking occupant; animate a direct replacement.
+        lock(cv,505,355,1.0,occupied=True)
+        text(cv,505,265,"CAFFEINE",32,RED,stroke=3,scale=pop(t,T[1],0.2))
+        line(cv,[(x+85,355),(420,355)],9,RED)
+        ell(cv,420,355,22,22,RED,0)
+    if t>=T[2]:
+        # Adenosine remains around the occupied receptor.
+        for i in range(5):
+            a=t*0.6+i*math.tau/5
+            molecule(cv,350+math.cos(a)*210,400+math.sin(a)*145,0.28,rotation=a)
+        text(cv,350,510,"THE SLEEP SIGNAL REMAINS",38,RED,stroke=4,scale=pop(t,T[2],0.2))
+    thesis(cv,t,T,0,"CAFFEINE BLOCKS")
+    thesis(cv,t,T,1,"THE RECEPTOR")
+    thesis(cv,t,T,2,"BUT THE SIGNAL REMAINS",col=INK)
 
-
-def s02(cv, t, T):
-    # Fake-key analogy and the lingering sleep pressure.
-    rrect(cv, -20, -20, 740, 1300, 1, BG2, 0)
-    if t < T[1]:
-        receptor(cv, 340, 320, 1.15 * pop(t, T[0] + 0.05), occupied=True)
-        text(cv, 340, 160, "FAKE KEY", 58, BLUE, stroke=5, scale=pop(t, T[0] + 0.1))
-        line(cv, [(120, 550), (235, 550), (265, 515)], 14, YEL)
-    elif t < T[2]:
-        adenosine(cv, 230, 330, 0.9 * pop(t, T[1] + 0.05), blocked=False)
-        receptor(cv, 490, 330, 0.9 * pop(t, T[1] + 0.1), occupied=True)
-        arrow(cv, 350, 330, 415, 330, 8, RED, rg(t, T[1] + 0.3, T[1] + 0.8))
-        text(cv, 340, 170, "TIREDNESS REMAINS", 46, INK, stroke=4, scale=pop(t, T[1] + 0.2))
-    else:
-        coffee_cup(cv, 340, 390, 0.75 * (1 - 0.4 * pop(t, T[2] + 0.2)), steam=False)
-        adenosine(cv, 510, 260, 0.55 * pop(t, T[2] + 0.1))
-        text(cv, 340, 180, "SLEEP PRESSURE", 48, INK, stroke=4, scale=pop(t, T[2] + 0.1))
-        text(cv, 340, 240, "CAN RETURN", 48, RED, stroke=4, scale=pop(t, T[2] + 0.2))
-    thesis(cv, t, T, 0, "CAFFEINE =", "A FAKE KEY", col=INK)
-    thesis(cv, t, T, 1, "TIREDNESS IS", "NOT ERASED", col=INK)
-    thesis(cv, t, T, 2, "WHEN IT WEARS OFF…", "YOU FEEL IT", col=INK)
-
-
-def s03(cv, t, T):
-    # The underlying sleep pressure remains as caffeine's effect fades.
-    rrect(cv, -20, -20, 740, 1300, 1, BG3, 0)
-    coffee_cup(cv, 220, 390, 0.55, steam=False)
-    adenosine(cv, 485, 315, 0.72 * (1 - 0.45 * pop(t, T[2] + 0.1)))
-    if t >= T[1]:
-        text(cv, 340, 180, "TIREDNESS IS STILL THERE", 44, INK, stroke=4, scale=pop(t, T[1] + 0.1))
-        arrow(cv, 335, 335, 400, 335, 8, RED, rg(t, T[1] + 0.2, T[1] + 0.6))
-    if t >= T[2]:
-        text(cv, 340, 250, "WHEN CAFFEINE FADES…", 42, RED, stroke=4, scale=pop(t, T[2] + 0.1))
-        text(cv, 340, 505, "SLEEPINESS RETURNS?", 44, INK, stroke=4, scale=pop(t, T[2] + 0.2))
-    thesis(cv, t, T, 0, "SLEEP SIGNAL", "NEVER DISAPPEARS", col=INK)
-    thesis(cv, t, T, 1, "COFFEE MASKS", "THE TIREDNESS", col=INK)
-    thesis(cv, t, T, 2, "WHEN IT FADES…", "WHAT HAPPENS?", col=INK)
-
+def s03(cv,t,T):
+    rrect(cv,-20,-20,740,1300,1,BG3,0)
+    # Cup shrinks/drifts away as the sleepy character slumps back.
+    cup(cv,170,420,0.58*(1-0.35*rg(t,T[1],T[2])),tilt=math.sin(t*2),steam=False)
+    mood="tired" if t<T[2] else "sleep"
+    person(cv,500,760,1.55,shirt=(245,195,80),mood=mood,L=(-55,65),R=(70,80))
+    # Persistent molecules are still present as the caffeine effect recedes.
+    for i in range(7):
+        a=t*0.35+i*math.tau/7
+        rad=160+35*math.sin(t*1.2+i)
+        molecule(cv,350+math.cos(a)*rad,340+math.sin(a)*rad*0.72,0.32,rotation=a)
+    if t>=T[1]:
+        text(cv,350,170,"CAFFEINE FADES",52,RED,stroke=4,scale=pop(t,T[1],0.18))
+        line(cv,[(290,570),(410,570)],12,RED)
+    if t>=T[2]:
+        text(cv,350,500,"SLEEPINESS COMES BACK?",42,INK,stroke=4,scale=1+0.03*math.sin(18*t))
+    thesis(cv,t,T,0,"IT ONLY MASKS TIREDNESS")
+    thesis(cv,t,T,1,"WHEN CAFFEINE FADES…")
+    thesis(cv,t,T,2,"DO YOU FEEL IT AGAIN?",col=INK)
 
 _FN = {"s01": s01, "s02": s02, "s03": s03}
 _BG = {"s01": BG1, "s02": BG2, "s03": BG3}
