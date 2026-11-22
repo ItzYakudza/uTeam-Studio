@@ -1,7 +1,7 @@
 """Deterministic object and camera motion helpers."""
 import math
 MOTION_NAMES=("elastic_pop squash_and_stretch anticipation_jump heartbeat_pulse camera_impact_shake whip_pan dolly_zoom float_idle orbit_around shatter_burst bounce overshoot settle spring pendulum shake wobble rotate_in flip spin fade_in fade_out slide_in slide_out rise drop drift follow_path smooth_follow magnetic_pull repulsion gravity_fall friction_stop particle_burst reassemble reveal_wipe mask_reveal wave_motion ripple swing stagger chain_reaction time_freeze camera_zoom zoom_punch smooth_zoom camera_pan camera_tilt camera_follow camera_track camera_orbit camera_roll camera_rack_focus parallax_shift push_in pull_out crash_zoom handheld_noise camera_recoil cinematic_reframe".split()
-EASING_NAMES=("ease_out_cubic ease_in_cubic ease_in_out_cubic ease_out_back ease_out_elastic ease_in_out_sine smoothstep damped_spring".split())
+EASING_NAMES="ease_out_cubic ease_in_cubic ease_in_out_cubic ease_out_back ease_out_elastic ease_in_out_sine smoothstep damped_spring".split()
 def clamp(x,a=0,b=1):return max(a,min(b,x))
 def ease(t,kind="ease_out_cubic"):
  x=clamp(t)
