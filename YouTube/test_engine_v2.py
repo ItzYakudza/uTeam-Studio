@@ -56,7 +56,7 @@ def scene(t):
     scale = 1.25 + .08*np.sin(local*2.4)
     x = CFG.center_x + drift["x"] if "x" in drift else CFG.center_x
     y = 555 + drift["y"]
-    draw_prop(cv, x, y, scale=scale, t=local, color=p["accent"], accent=p["secondary"], shadow=True)
+    draw_prop(cv, x, y, scale=scale, t=local, name=hero, color=p["accent"], accent=p["secondary"], shadow=True)
     # small moving orbiting nodes around hero
     for k in range(8):
         a = local*1.1 + k*np.pi/4
