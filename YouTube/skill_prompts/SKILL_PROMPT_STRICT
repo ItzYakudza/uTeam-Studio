@@ -134,3 +134,13 @@
 4. Таблица проверки 10 вопросов и доказательство спроса по выбранному лидеру (ссылка/автор/просмотры)
 
 Тайминги анимаций строго привязывай к моментам речи. Не придумывай свои длительности сцен.
+
+
+## Optional Engine v2 API (additive; legacy scene functions remain available)
+- Palette helpers: `get_palette("deep_ocean_01")`, `PALETTES`, `list_palettes()`; 12 families x 10 variations. Keep text readable; use `safe_text_colors` and avoid white outlines on dark/colored text. For backgrounds luminance below 90, use a contrasting badge/pill, not a black stroke; Dark Ink stroke is only for backgrounds above 140.
+- Text styles: `draw_text(cv,x,y,label,size=48,style_name="impact_title",color=None,bg=None,accent=None)`; `TEXT_STYLES` has 120 entries. `draw_split(cv,x,y,before,keyword,after,...)
+- New prop registry: `PROPS_100` (300 registered names), `draw_prop(cv,x,y,scale=1,t=0,state=None,mood=None,name="...")`; or call `PROPS_100["name"](cv,x,y,scale,t,state,mood)
+- Motion: `motion_apply(name,t,**params)`; use physical easing, anticipation, squash/stretch, pulses, bursts and camera presets; motion helpers return scalar progress or transform dictionaries.
+- SFX: `render_sfx("whoosh_fast",duration=.4,intensity=1,seed=None)`, `sfx_trigger("impact_thud",at=2.4)`, `render_sfx_events(total_duration=...)`; render arrays with `render_to_file` or `write_wav`.
+- Music: `generate_music(style="science_ambient",bpm=110,key="D",duration=30,seed=42)`; duck against voice activity or a voice file with `duck_music(track,voiceover="voiceover.mp3",duck_db=-14)`; export via `write_music`.
+- Preserve existing scene APIs and visual language. New v2 helpers are opt-in; do not refactor legacy scenes to use them unless asked. Sync motion/SFX to speech events; vary shot scale and visual focus every 1–2 seconds. Hook retention is a creative target, not a guaranteed metric.
