@@ -2,6 +2,7 @@
 from __future__ import annotations
 import math
 from .primitives import line,poly,ell,rrect,text
+from .config import WHITE
 from .stage import group
 from .kit import PAL,star_poly,heart_shape,cloud_shape,blob_shape,rectangle,rect_c,curve,capsule
 
