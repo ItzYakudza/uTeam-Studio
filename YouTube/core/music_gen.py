@@ -12,7 +12,7 @@ def generate_music(style="science_ambient",bpm=110,key="D",duration=30,seed=None
  out=(np.sin(2*np.pi*f*t)+.35*np.sin(2*np.pi*f*1.5*t)+.2*np.sin(2*np.pi*f*2*t))*(.12+.04*np.sin(2*np.pi*t/5))
  beat=60/max(40,min(220,float(bpm)))
  for bt in np.arange(0,d,beat*2):
-  i=int(bt*sample_rate);L=min(int(beat*1.2*sample_rate),n-i);q=np.arange(L)/sample_rate;bf=440*2**((root-24-69)/12))
+  i=int(bt*sample_rate);L=min(int(beat*1.2*sample_rate),n-i);q=np.arange(L)/sample_rate;bf=440*2**((root-24-69)/12)
   out[i:i+L]+=.1*np.sin(2*np.pi*bf*q)*np.exp(-3*q)
  if style in ("energetic","pizzicato","lofi_science"):
   step=beat/2 if style=="energetic" else beat
