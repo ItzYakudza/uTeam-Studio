@@ -1,0 +1,62 @@
+# Python bytecode and caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments and local configuration
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+**/youtube_oauth.json
+**/studio_oauth_token.json
+**/client_secret*.json
+**/token*.json
+
+# Local databases, logs and temporary files
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# Python tooling
+.pyright/
+.tox/
+.nox/
+
+# Frontend dependencies and build output
+**/node_modules/
+web/frontend/dist/
+web/frontend/.vite/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Generated episode assets and local sync state (keep scripts, scenes and metadata)
+YouTube/storage/.stats_sync_state.json
+YouTube/storage/**/source/
+YouTube/storage/**/voiceover.mp3
+YouTube/storage/**/build/*.mp4
+YouTube/storage/**/build/contact_sheet*.png
+YouTube/storage/**/build/*.tmp
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
